@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>操作系统学习总纲.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> or <div class="page"></div> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="操作系统学习总纲">操作系统学习总纲</h1>
+<blockquote>
+<p>📅 最后更新：2026-05-30<br>
+🎯 基于 38 天系统学习笔记提炼，持续迭代中</p>
+</blockquote>
+<hr>
+<h2 id="一学习路线图全局视图">一、学习路线图（全局视图）</h2>
+<pre class="hljs"><code><div>                    ┌──────────────────────────────────────────┐
+                    │           操作系统学习全景路线             │
+                    └──────────────────────────────────────────┘
+
+ 阶段0：基础启蒙                   阶段1：并发与同步                 阶段2：内存管理
+┌─────────────────┐           ┌─────────────────────┐        ┌─────────────────────┐
+│ □ C/汇编/编译链  │           │ □ 线程 vs 进程       │        │ □ 虚拟地址空间        │
+│ □ 有限状态机     │  ──────▶  │ □ 原子性与锁         │──────▶ │ □ 页表 (多级)        │
+│ □ Linux环境搭建  │           │ □ 自旋锁/互斥锁/信号量│        │ □ MMU / TLB         │
+│ □ gdb/strace/obj │           │ □ 条件变量与等待唤醒  │        │ □ Buddy / Slab      │
+│ □ 管道与重定向   │           │ □ 死锁四条件与规避   │        │ □ COW / 懒分配       │
+└─────────────────┘           └─────────────────────┘        └─────────────────────┘
+         │                              │                              │
+         ▼                              ▼                              ▼
+ 阶段3：进程与系统调用             阶段4：文件系统                  阶段5：中断与Trap
+┌─────────────────┐           ┌─────────────────────┐        ┌─────────────────────┐
+│ □ fork/exec/exit │           │ □ FAT / ext2 设计    │        │ □ 中断向量表 (IDT)    │
+│ □ 进程地址空间   │  ──────▶  │ □ inode / 目录项     │──────▶ │ □ 上半部 vs 下半部    │
+│ □ mmap / VDSO    │           │ □ 软链接 vs 硬链接   │        │ □ trampoline 机制     │
+│ □ ELF 加载过程   │           │ □ buffer cache      │        │ □ ecall / 系统调用路径 │
+│ □ 写时复制 (COW) │           │ □ 块分配 bitmap     │        │ □ 信号机制            │
+└─────────────────┘           └─────────────────────┘        └─────────────────────┘
+         │                              │                              │
+         └──────────────────────────────┴──────────────────────────────┘
+                                        │
+                                        ▼
+                              阶段6：综合实战
+                         ┌─────────────────────┐
+                         │ □ xv6 源码精读       │
+                         │ □ sandbox 实验       │
+                         │ □ COW 实验           │
+                         │ □ alarm 实验         │
+                         │ □ 多线程编程          │
+                         │ □ 内存分配器实现      │
+                         └─────────────────────┘
+</div></code></pre>
+<h3 id="路线图说明">路线图说明</h3>
+<p>以上是<strong>主线路径</strong>，适合按阶段递进学习。每个阶段之间有依赖关系（箭头标注），但阶段内部的知识点可以交叉学习。如果你已经有一定基础，可以直接跳到感兴趣的阶段。</p>
+<blockquote>
+<p>💡 <strong>扩展提示</strong>：后续可以增加的方向包括——设备驱动模型（I2C/Platform 总线）、网络协议栈、虚拟化技术、实时操作系统（RTOS）等。添加时只需在对应阶段下补充即可。</p>
+</blockquote>
+<hr>
+<h2 id="二各阶段重点关键词--注意点">二、各阶段重点（关键词 + 注意点）</h2>
+<h3 id="阶段0基础启蒙">阶段0：基础启蒙</h3>
+<table>
+<thead>
+<tr>
+<th>关键词</th>
+<th>必须掌握</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>有限状态机 (FSM)</strong></td>
+<td>程序本质 = 状态机；C→汇编→二进制由编译器完成</td>
+<td>⚠️ 编译优化可能合并/删除状态；语义上有效的状态不能被错误优化</td>
+</tr>
+<tr>
+<td><strong>Linux 环境</strong></td>
+<td>WSL2、gdb（单步/断点/watchpoint）、strace（系统调用跟踪）</td>
+<td>⚠️ <code>static</code> 链接会使 objdump 分析变困难，调试时优先动态链接</td>
+</tr>
+<tr>
+<td><strong>编译工具链</strong></td>
+<td><code>objdump -d -S</code>（需 <code>-g</code>）、<code>readelf -h/-l</code>、<code>size</code>、<code>nm</code></td>
+<td>⚠️ <code>-ffreestanding</code> 下仍可用 <code>stddef.h</code>/<code>stdint.h</code>/<code>stdbool.h</code> 等</td>
+</tr>
+<tr>
+<td><strong>Shell 基础</strong></td>
+<td><code>&gt;</code> 输出重定向，<code>|</code> 管道（本质是 IPC）</td>
+<td>⚠️ <code>stdout</code> 到终端是 line buffer，到 pipe/file 是 full buffer</td>
+</tr>
+<tr>
+<td><strong>大小端</strong></td>
+<td>小端：低字节在低地址（主流）；大端：低字节在高地址</td>
+<td>⚠️ 网络字节序通常是大端</td>
+</tr>
+<tr>
+<td><strong>复杂声明</strong></td>
+<td><code>int *a[5]</code> 指针数组 vs <code>int (*a)[5]</code> 数组指针；<code>long (*fp)(int)</code> 函数指针</td>
+<td>⚠️ 不要记&quot;最后和什么结合&quot;，而是按 C 声明语法解析</td>
+</tr>
+</tbody>
+</table>
+<h3 id="阶段1并发与同步">阶段1：并发与同步</h3>
+<table>
+<thead>
+<tr>
+<th>关键词</th>
+<th>必须掌握</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>线程 vs 进程</strong></td>
+<td>线程共享地址空间（全局变量共享），各有独立栈；进程有独立地址空间（需 MMU）</td>
+<td>⚠️ <code>volatile</code> 只防编译器优化，<strong>不能保证线程安全</strong></td>
+</tr>
+<tr>
+<td><strong>原子性</strong></td>
+<td>多线程破坏原子操作 → 需要锁或原子指令（<code>lock</code> 前缀、<code>xchg</code>）</td>
+<td>⚠️ 原子指令的&quot;读-改-写&quot;整体不会被其他核打断</td>
+</tr>
+<tr>
+<td><strong>内存一致性</strong></td>
+<td>多核乱序 + Cache → 需要内存屏障（<code>mfence</code>）、<code>__sync_synchronize()</code></td>
+<td>⚠️ 即使单条指令原子，也可能因 cache coherence 导致可见性问题</td>
+</tr>
+<tr>
+<td><strong>自旋锁 (spinlock)</strong></td>
+<td>忙等，适合临界区短、竞争少的场景；持有期间<strong>关中断</strong></td>
+<td>⚠️ 自旋锁内不能休眠！单核上必须关中断防止死锁</td>
+</tr>
+<tr>
+<td><strong>互斥锁 (mutex)</strong></td>
+<td>睡眠锁，竞争失败进入休眠；Futex = fast path（用户态原子操作）+ slow path（系统调用）</td>
+<td>⚠️ 中断上下文<strong>绝对不能睡眠</strong>（无进程上下文）</td>
+</tr>
+<tr>
+<td><strong>条件变量</strong></td>
+<td><code>cond_signal</code> 唤醒一个，<code>cond_broadcast</code> 唤醒全部</td>
+<td>⚠️ 等待后必须用 <code>while</code> 重新检查条件，防止虚假唤醒</td>
+</tr>
+<tr>
+<td><strong>信号量 (semaphore)</strong></td>
+<td>P/V 操作（wait/post），二值信号量 ≈ 互斥锁</td>
+<td>⚠️ mutex 有所有权语义（谁拿谁放），信号量无此限制，<strong>优先用 mutex</strong></td>
+</tr>
+<tr>
+<td><strong>死锁</strong></td>
+<td>四必要条件：互斥、请求与保持、不剥夺、循环等待</td>
+<td>⚠️ Lock ordering（固定顺序申请锁）是最实用的死锁预防方法</td>
+</tr>
+<tr>
+<td><strong>读写锁</strong></td>
+<td>多读者并发，写者互斥；需写者优先防饥饿</td>
+<td>⚠️ 临界变量必须在锁内修改，混用锁和原子操作极易出 bug</td>
+</tr>
+<tr>
+<td><strong>Peterson 算法</strong></td>
+<td>store/load 实现两线程互斥：&quot;举旗 + 贴纸条&quot;，先到先得</td>
+<td>⚠️ 多核上仍需内存屏障</td>
+</tr>
+<tr>
+<td><strong>Per-CPU 优化</strong></td>
+<td>每个 CPU 独立 freelist，减少锁竞争</td>
+<td>⚠️ 偷取时<strong>先释放自己锁再拿别人锁</strong>，否则死锁；注意断链操作</td>
+</tr>
+</tbody>
+</table>
+<h3 id="阶段2内存管理">阶段2：内存管理</h3>
+<table>
+<thead>
+<tr>
+<th>关键词</th>
+<th>必须掌握</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>虚拟地址空间</strong></td>
+<td>4GB（32位），各段：text/data/bss/stack/mmap/heap</td>
+<td>⚠️ <code>pmap</code> 读 <code>/proc/pid/maps</code>，可与 <code>readelf -l</code> 互相印证</td>
+</tr>
+<tr>
+<td><strong>页表 (Page Table)</strong></td>
+<td>Sv39：9+9+9+12 = 39 位 VA；PTE 含 PPN + flags（V/R/W/X/U）；多级减少内存开销</td>
+<td>⚠️ 内核操作的是虚拟地址（x86恒等映射只是特例），不是物理地址</td>
+</tr>
+<tr>
+<td><strong>MMU / TLB</strong></td>
+<td>MMU 自动遍历页表翻译 VA→PA；TLB 缓存最近 PTE</td>
+<td>⚠️ 切换进程 = 切换页表基址寄存器（如 <code>satp</code>/<code>CR3</code>），需刷新 TLB</td>
+</tr>
+<tr>
+<td><strong>Buddy Allocator</strong></td>
+<td>管理 2 的幂大小页块（4K→16M），分裂/合并用 XOR 算 buddy</td>
+<td>⚠️ pool_start 必须对齐到最大块大小，否则对齐要求无法满足</td>
+</tr>
+<tr>
+<td><strong>Slab Allocator</strong></td>
+<td>一页切多块小对象（16B→2048B），free_list 用 intrusive list</td>
+<td>⚠️ 空闲对象的前几字节存 next 指针，分配后覆盖——不需要额外内存</td>
+</tr>
+<tr>
+<td><strong>COW (写时复制)</strong></td>
+<td>fork 时共享页表项、清 PTE_W；写时缺页异常触发真正复制</td>
+<td>⚠️ 需维护引用计数，归零才真释放；父进程 PTE 也要清写权限！</td>
+</tr>
+<tr>
+<td><strong>mmap</strong></td>
+<td>建立虚拟映射，懒分配——缺页时才分配物理页</td>
+<td>⚠️ <code>mmap</code> 不立即分配内存；<code>malloc</code> 底层可能用 <code>mmap</code> + <code>sbrk</code></td>
+</tr>
+<tr>
+<td><strong>VDSO / VVAR</strong></td>
+<td>只读/高频系统调用不陷入内核（如 <code>gettimeofday</code>），映射到每个进程</td>
+<td>⚠️ 类似 xv6 中 trampoline 页在所有进程中映射</td>
+</tr>
+<tr>
+<td><strong>SRAM vs DRAM</strong></td>
+<td>SRAM：触发器，快，贵，做 Cache；DRAM：电容，需刷新，做主存</td>
+<td>⚠️ SSD 内有自己的 FTL（逻辑→物理映射），类似虚拟内存的思想</td>
+</tr>
+</tbody>
+</table>
+<h3 id="阶段3进程与系统调用">阶段3：进程与系统调用</h3>
+<table>
+<thead>
+<tr>
+<th>关键词</th>
+<th>必须掌握</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>fork()</strong></td>
+<td>复制进程，COW 优化；子进程返回0，父进程返回子PID</td>
+<td>⚠️ 多重 fork 画状态机分析，关注 PC 位置和 PID 返回值</td>
+</tr>
+<tr>
+<td><strong>execve()</strong></td>
+<td>替换进程映像，_start → <code>__libc_start_main</code> → main</td>
+<td>⚠️ She-bang (<code>#!</code>) → execve 的变相参数替换</td>
+</tr>
+<tr>
+<td><strong>exit()</strong></td>
+<td><code>exit(0)</code> 调用 atexit 注册函数 + 清理；<code>_exit(0)</code> 直接退出</td>
+<td>⚠️ 多线程 <code>fork()</code> 后只有调用线程被复制，其他线程消失</td>
+</tr>
+<tr>
+<td><strong>文件描述符</strong></td>
+<td>fd 是打开文件表索引；0/1/2 是 stdin/stdout/stderr</td>
+<td>⚠️ fork 后父子共享 open file description（offset 共享）</td>
+</tr>
+<tr>
+<td><strong>进程组</strong></td>
+<td>终端信号发到前台进程组；fork 后继承 PGID</td>
+<td>⚠️ <code>Ctrl+Z</code> 挂起（SIGTSTP），<code>Ctrl+C</code> 中断（SIGINT），fg/bg 切换</td>
+</tr>
+<tr>
+<td><strong>ELF 文件</strong></td>
+<td>ELF Header → Program Headers → .text/.data/.bss → 符号表</td>
+<td>⚠️ 静态链接体积大但简单；动态链接 .so 共享但依赖 ld-linux.so</td>
+</tr>
+<tr>
+<td><strong>栈帧结构</strong></td>
+<td>fp-8 存返回地址 ra，fp-16 存上级帧指针</td>
+<td>⚠️ backtrace 实现：沿 fp 链回溯，边界条件不得超过页范围</td>
+</tr>
+<tr>
+<td><strong>vfork</strong></td>
+<td>父子共享地址空间，子进程先运行父进程阻塞</td>
+<td>⚠️ vfork 后必须立即 execve 或 _exit，否则危险</td>
+</tr>
+</tbody>
+</table>
+<h3 id="阶段4文件系统">阶段4：文件系统</h3>
+<table>
+<thead>
+<tr>
+<th>关键词</th>
+<th>必须掌握</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>文件系统本质</strong></td>
+<td>磁盘上的数据结构，按块访问，block set → 变长数组 → 文件/目录</td>
+<td>⚠️ 核心假设是&quot;按块访问&quot;，随机访问靠索引结构</td>
+</tr>
+<tr>
+<td><strong>FAT 文件系统</strong></td>
+<td>目录项存文件名+起始簇号；FAT 表存链表（next cluster）；简单但易碎片</td>
+<td>⚠️ FAT 表损坏 = 数据丢失，因此通常有多份备份</td>
+</tr>
+<tr>
+<td><strong>ext2 / UNIX FS</strong></td>
+<td>inode 集中存元数据+数据块指针；目录项是&quot;文件名→inode号&quot;映射</td>
+<td>⚠️ inode 本身不存文件名，这允许多个硬链接指向同一 inode</td>
+</tr>
+<tr>
+<td><strong>inode 三形态</strong></td>
+<td><code>dinode</code>（磁盘原始结构）→ <code>inode</code>（内存版，加锁/引用计数）→ <code>stat</code>（用户态精简投影）</td>
+<td>⚠️ <code>ls -i</code> 看 inode 号；<code>ln</code> 创建硬链接（共享 inode），<code>ln -s</code> 创建软链接</td>
+</tr>
+<tr>
+<td><strong>数据块索引</strong></td>
+<td>direct blocks → indirect block → 多级类似页表</td>
+<td>⚠️ 大文件间接索引，小文件直接块，需要权衡</td>
+</tr>
+<tr>
+<td><strong>xv6 文件系统布局</strong></td>
+<td>`[boot</td>
+<td>sb</td>
+</tr>
+<tr>
+<td><strong>内部 vs 外部碎片</strong></td>
+<td>内部碎片 = 分配单元大于实际使用；外部碎片 = 空闲空间不连续</td>
+<td>⚠️ 小文件多时 FAT 碎片化严重，ext2 通过 inode 集中存储改善</td>
+</tr>
+<tr>
+<td><strong>挂载 (mount)</strong></td>
+<td>将设备文件系统挂到 VFS 目录树；任意目录可做挂载点</td>
+<td>⚠️ 磁盘镜像文件可通过 loop device 再 mount（文件中的文件系统）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="阶段5中断与-trap">阶段5：中断与 Trap</h3>
+<table>
+<thead>
+<tr>
+<th>关键词</th>
+<th>必须掌握</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Trap 四类</strong></td>
+<td>系统调用、设备中断、缺页异常、时钟中断</td>
+<td>⚠️ 发生 trap 时，正在执行的指令应当可恢复并继续</td>
+</tr>
+<tr>
+<td><strong>ecall / 系统调用路径</strong></td>
+<td>用户 ecall → trampoline.S (uservec) → 切换内核页表 → usertrap() → syscall() → 返回</td>
+<td>⚠️ 系统调用号在 a7 寄存器，返回值写回 trapframe-&gt;a0</td>
+</tr>
+<tr>
+<td><strong>trampoline 页</strong></td>
+<td>同时映射在用户页表和内核页表最高处，用于 trap 切换</td>
+<td>⚠️ RISC-V trap 不自动切换页表，所以 trampoline 必须在两个页表都有映射</td>
+</tr>
+<tr>
+<td><strong>中断上下文</strong></td>
+<td>上半部（硬中断）：关中断、快处理；下半部（softirq/tasklet/workqueue）：延迟处理</td>
+<td>⚠️ 工作队列 = 内核线程 → 可睡眠；softirq/tasklet 不能睡眠</td>
+</tr>
+<tr>
+<td><strong>IDT (中断描述符表)</strong></td>
+<td>中断号 → 处理函数地址；CPU 自动保存 CS/RIP/RFLAGS/SS/RSP</td>
+<td>⚠️ x86 进入中断时硬件自动压栈这些寄存器</td>
+</tr>
+<tr>
+<td><strong>信号机制</strong></td>
+<td>SIGINT/SIGKILL/SIGSEGV 等；进程可注册 handler；内核发送信号</td>
+<td>⚠️ <code>Ctrl+C</code> → 终端向前台进程组发 SIGINT</td>
+</tr>
+<tr>
+<td><strong>自旋锁 + 中断</strong></td>
+<td>拿自旋锁必须关本地中断，防止死锁</td>
+<td>⚠️ 持锁时被中断 → 中断处理程序尝试拿同一把锁 → 死锁</td>
+</tr>
+<tr>
+<td><strong>RISC-V 特权级</strong></td>
+<td>M-mode（机器态）→ S-mode（内核态）→ U-mode（用户态）；各有独立的 CSR</td>
+<td>⚠️ ARMv7 有9种模式，IRQ 有独立寄存器副本，不需立即保存用户栈</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="三学习遇到的坑含解决方案">三、学习遇到的坑（含解决方案）</h2>
+<h3 id="-多线程编程坑">🔴 多线程编程坑</h3>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>坑描述</th>
+<th>根因</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>坑1</strong></td>
+<td>释放锁后才读取共享数据</td>
+<td>释放锁后槽位已被其他线程覆写</td>
+<td><strong>在锁内</strong>把数据复制到局部变量，再释放锁</td>
+</tr>
+<tr>
+<td><strong>坑2</strong></td>
+<td>多个 worker 重复处理同一任务</td>
+<td>看到槽位有数据就直接处理，未标记已取走</td>
+<td>在锁内标记该槽位为&quot;空&quot;，再释放锁</td>
+</tr>
+<tr>
+<td><strong>坑3</strong></td>
+<td>程序结束时 worker 死等</td>
+<td>输入线程只 <code>signal</code> 一个 worker，其他 worker 永远睡眠</td>
+<td>输入结束时用 <code>pthread_cond_broadcast</code> 唤醒<strong>所有</strong>等待线程</td>
+</tr>
+<tr>
+<td><strong>坑4</strong></td>
+<td><code>cond_wait</code> 后用 <code>if</code> 而非 <code>while</code></td>
+<td>虚假唤醒或条件被其他线程抢先改变</td>
+<td>始终用 <code>while</code> 重新检查条件</td>
+</tr>
+<tr>
+<td><strong>坑5</strong></td>
+<td>线程入口函数相同则误以为共享栈</td>
+<td>对线程模型理解不足</td>
+<td>每个线程有独立栈/PC/寄存器，仅共享全局变量和堆</td>
+</tr>
+</tbody>
+</table>
+<h3 id="-内存管理坑">🔴 内存管理坑</h3>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>坑描述</th>
+<th>根因</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>坑6</strong></td>
+<td>metadata 写成超大静态数组</td>
+<td><code>pages[1048576]</code> 静态分配 32MB，超 1MB 限制</td>
+<td>在 <code>pmm_init()</code> 中从 heap 开头切 metadata</td>
+</tr>
+<tr>
+<td><strong>坑7</strong></td>
+<td>pool_start 未对齐到 16MiB</td>
+<td>大块分配的对齐要求无法满足</td>
+<td>初始化时 <code>align_up(hs + meta_bytes, MAX_ALLOC)</code></td>
+</tr>
+<tr>
+<td><strong>坑8</strong></td>
+<td>COW 只改了子进程 PTE</td>
+<td>忘记父进程对应页仍可写</td>
+<td>fork 时<strong>父子进程 PTE 都要</strong>清 PTE_W + 设 COW 标记</td>
+</tr>
+<tr>
+<td><strong>坑9</strong></td>
+<td>COW 标志位覆盖其他权限位</td>
+<td><code>flags &amp;= 1&lt;&lt;8</code> 清空了除 COW 外的全部 flag</td>
+<td>使用 `flags</td>
+</tr>
+<tr>
+<td><strong>坑10</strong></td>
+<td>double free 无法检测</td>
+<td>没有校验传入地址的有效性</td>
+<td>可加 assert：<code>assert(pages[id].flag == PG_SLAB || pages[id].flag == PG_LARGE)</code></td>
+</tr>
+<tr>
+<td><strong>坑11</strong></td>
+<td>slab 页永远不归还</td>
+<td><code>inuse==0</code> 时不释放整个页</td>
+<td>空 slab 页还给 buddy：<code>buddy_free_pages(page_addr(id))</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="-并发锁机制坑">🔴 并发/锁机制坑</h3>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>坑描述</th>
+<th>根因</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>坑12</strong></td>
+<td>CPU1 偷 CPU2 同时 CPU2 偷 CPU1 → 死锁</td>
+<td>持自己锁时尝试拿对方锁，形成循环等待</td>
+<td><strong>先释放自己锁</strong>，再去偷别人的</td>
+</tr>
+<tr>
+<td><strong>坑13</strong></td>
+<td>偷链表后半段未正确断链</td>
+<td>修改了整个 freelist，但原链表仍有引用</td>
+<td>只修改中间节点的 next 指针，不要整链表置空</td>
+</tr>
+<tr>
+<td><strong>坑14</strong></td>
+<td>锁保护变量和原子操作混用</td>
+<td>部分状态在锁外修改，产生竞态</td>
+<td>所有临界变量的读写<strong>必须都在持锁状态下</strong></td>
+</tr>
+<tr>
+<td><strong>坑15</strong></td>
+<td>自旋锁内调用可能休眠的函数</td>
+<td>spinlock 持有期间休眠会导致死锁</td>
+<td>自旋锁内绝不调用可能 block 的函数</td>
+</tr>
+</tbody>
+</table>
+<h3 id="-系统编程坑">🔴 系统编程坑</h3>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>坑描述</th>
+<th>根因</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>坑16</strong></td>
+<td>内核态直接使用用户空间地址</td>
+<td>用户虚拟地址在内核页表中无效</td>
+<td>使用 <code>copyin</code>/<code>copyinstr</code> 或 <code>argstr</code>/<code>argint</code> 安全拷贝</td>
+</tr>
+<tr>
+<td><strong>坑17</strong></td>
+<td>alarm 返回后不知原执行位置</td>
+<td>直接修改 trapframe-&gt;epc 跳转到 handler，丢失了原始上下文</td>
+<td>先保存完整 trapframe 副本，alarm_return 时恢复</td>
+</tr>
+<tr>
+<td><strong>坑18</strong></td>
+<td>alarm_return 覆盖系统调用返回值</td>
+<td>恢复旧 trapframe 时冲掉了当前 a0</td>
+<td>先保存 <code>a0</code> → 恢复旧 trapframe → 写回 <code>a0</code></td>
+</tr>
+<tr>
+<td><strong>坑19</strong></td>
+<td><code>find</code> 递归时直接修改路径指针</td>
+<td>破坏了原始路径，递归上层使用错误</td>
+<td>创建 <code>buf[]</code> 副本，用独立指针 <code>p</code> 定位尾部</td>
+</tr>
+<tr>
+<td><strong>坑20</strong></td>
+<td><code>strcpy</code> 到指针数组的元素前未分配内存</td>
+<td>野指针</td>
+<td><code>char *p[num]</code> 中每个 <code>p[i]</code> 必须先指向有效内存</td>
+</tr>
+</tbody>
+</table>
+<h3 id="-工具链调试坑">🔴 工具链/调试坑</h3>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>坑描述</th>
+<th>根因</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>坑21</strong></td>
+<td>strace 输出和程序输出混在一起</td>
+<td>两者都输出到同一终端</td>
+<td>用 <code>strace -f -o /tmp/log ./prog</code> 分开输出</td>
+</tr>
+<tr>
+<td><strong>坑22</strong></td>
+<td>WSL2 缺少内核源码/headers 无法编译 .ko</td>
+<td>WSL2 默认无完整内核构建环境</td>
+<td>安装对应内核 headers 或在完整 Linux 环境中编译</td>
+</tr>
+<tr>
+<td><strong>坑23</strong></td>
+<td><code>\n</code> 在串口输出格式不对</td>
+<td>某些终端需要 CR+LF</td>
+<td>用 <code>\r\n</code> 代替 <code>\n</code></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="四关键概念速查表">四、关键概念速查表</h2>
+<h3 id="41-锁类型对比">4.1 锁类型对比</h3>
+<pre class="hljs"><code><div>                    自旋锁(spinlock)              互斥锁(mutex)
+                   ┌─────────────────┐         ┌─────────────────┐
+  等待方式：       │  忙等(循环)      │         │  休眠(不占CPU)   │
+  系统调用：       │  无              │         │  有(Futex slow)  │
+  适合场景：       │  临界区短+竞争少  │         │  临界区长+竞争多  │
+  中断上下文：     │  可用(关中断)    │         │  ❌ 绝对不能用     │
+  持有期间：       │  不能休眠        │         │  可以休眠         │
+  加锁开销：       │  低(无syscall)   │         │  较高(需syscall)  │
+                   └─────────────────┘         └─────────────────┘
+</div></code></pre>
+<h3 id="42-内存分配层次">4.2 内存分配层次</h3>
+<pre class="hljs"><code><div>  用户请求 kalloc(size)
+       │
+       ├── size ≤ 2048 ──▶ SLAB Allocator ──▶ 从 4KB 页切小块(16B~2048B)
+       │                        │
+       │                        └── 页不够时 ──▶ Buddy Allocator (order 0 = 4KB)
+       │
+       └── size &gt; 2048 ──▶ Buddy Allocator ──▶ 4KB / 8KB / ... / 16MB
+                                │
+                                └── 按 order 分裂/合并
+</div></code></pre>
+<h3 id="43-系统调用路径全景">4.3 系统调用路径全景</h3>
+<pre class="hljs"><code><div>    用户态                          内核态
+  ┌─────────┐                   ┌──────────────┐
+  │ 用户程序 │                   │ trampoline.S │
+  │ ecall   │──────────────────▶│ uservec:     │
+  │         │                   │  保存寄存器   │
+  │         │                   │  切内核页表   │
+  │         │                   └──────┬───────┘
+  │         │                          │
+  │         │                   ┌──────▼───────┐
+  │         │                   │ usertrap()   │
+  │         │                   │  判断trap类型 │
+  │         │                   └──────┬───────┘
+  │         │                          │
+  │         │                   ┌──────▼───────┐
+  │         │                   │ syscall()    │
+  │         │                   │  a7=调用号   │
+  │         │                   │  执行sys_xxx │
+  │         │                   │  a0=返回值   │
+  │         │                   └──────┬───────┘
+  │         │                          │
+  │         │                   ┌──────▼───────┐
+  │         │                   │ trampoline.S │
+  │  ◀─────│───────────────────│ userret:     │
+  │ sret    │                   │  恢复寄存器   │
+  └─────────┘                   │  切用户页表   │
+                                │  sret返回    │
+                                └──────────────┘
+</div></code></pre>
+<h3 id="44-elf-文件加载流程">4.4 ELF 文件加载流程</h3>
+<pre class="hljs"><code><div>  磁盘 ELF 文件 ──▶ execve() ──▶ 内核 loader
+                                     │
+                    ┌────────────────┼────────────────┐
+                    ▼                ▼                ▼
+              解析 ELF Header   建立 mmap 映射    初始化用户栈
+              (入口地址/段表)  (text/data 段)   (argc/argv/envp)
+                    │                │                │
+                    └────────────────┼────────────────┘
+                                     │
+                                     ▼
+                          缺页异常 → 磁盘读入 → 建立页表
+                           (lazy loading)
+                                     │
+                                     ▼
+                          跳转到 _start → main()
+</div></code></pre>
+<h3 id="45-多级页表地址翻译-sv39">4.5 多级页表地址翻译 (Sv39)</h3>
+<pre class="hljs"><code><div>  虚拟地址 (39 bits)
+  ┌──────────┬──────────┬──────────┬────────────┐
+  │  VPN[2]  │  VPN[1]  │  VPN[0]  │   offset   │
+  │  9 bits  │  9 bits  │  9 bits  │  12 bits   │
+  └────┬─────┴────┬─────┴────┬─────┴─────┬──────┘
+       │          │          │           │
+       ▼          ▼          ▼           │
+  ┌─────────┐ ┌─────────┐ ┌─────────┐    │
+  │ L2 页表 │ │ L1 页表 │ │ L0 页表 │    │
+  │(根页表) │ │         │ │(叶子)   │    │
+  │ PTE[VPN │▶│ PTE[VPN │▶│ PTE[VPN │    │
+  │   [2]]  │ │   [1]]  │ │   [0]]  │    │
+  └─────────┘ └─────────┘ └────┬────┘    │
+                               │PPN      │
+                               ▼         ▼
+                          ┌───────────────────┐
+                          │   物理地址 (PA)    │
+                          │  PPN[2:0] + offset│
+                          └───────────────────┘
+</div></code></pre>
+<hr>
+<h2 id="五总复习策略">五、总复习策略</h2>
+<h3 id="51-三层复习法">5.1 三层复习法</h3>
+<pre class="hljs"><code><div>         ┌─────────────────────────────────┐
+         │  第一层：概念地图 (30min)         │
+         │  画出各阶段关键词关系图，           │
+         │  口头解释每个箭头为什么成立         │
+         └───────────────┬─────────────────┘
+                         │
+         ┌───────────────▼─────────────────┐
+         │  第二层：核心机制深度复述 (2h)     │
+         │  每个重点机制的&quot;三板斧&quot;：          │
+         │  ① 画流程图/时序图                │
+         │  ② 口述关键代码路径               │
+         │  ③ 列举3个相关坑                  │
+         └───────────────┬─────────────────┘
+                         │
+         ┌───────────────▼─────────────────┐
+         │  第三层：交叉串联 (1h)            │
+         │  找跨阶段的联系，例如：            │
+         │  · COW 涉及 fork + 页表 + 缺页    │
+         │  · mmap 涉及 VMA + 懒分配 + buddy │
+         │  · alarm 涉及 trap + 信号 + 计时器│
+         └─────────────────────────────────┘
+</div></code></pre>
+<h3 id="52-可视化复习工具建议">5.2 可视化复习工具建议</h3>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>用途</th>
+<th>方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>手绘流程图</strong></td>
+<td>系统调用路径、中断处理流程、fork/exec 流程</td>
+<td>默画，对照笔记矫正</td>
+</tr>
+<tr>
+<td><strong>对比表格</strong></td>
+<td>锁类型对比、文件系统对比、分配器对比</td>
+<td>遮住一半默写另一半</td>
+</tr>
+<tr>
+<td><strong>心智模型图</strong></td>
+<td>进程地址空间布局、文件系统布局</td>
+<td>画到能脱稿讲解</td>
+</tr>
+<tr>
+<td><strong>代码走读</strong></td>
+<td>xv6 关键路径（trap、syscall、fork、COW）</td>
+<td>拿张纸手写关键函数调用链</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-复习检查清单">5.3 复习检查清单</h3>
+<pre class="hljs"><code><div>□ 能默画出系统调用完整路径（ecall → trampoline → usertrap → syscall → 返回）
+□ 能解释 fork + exec 过程中虚拟地址空间如何变化
+□ 能对比自旋锁、互斥锁、读写锁、信号量的异同
+□ 能手写 buddy allocator 的分裂与合并逻辑（至少伪代码级别）
+□ 能画出多级页表地址翻译过程
+□ 能解释 COW 从 fork 到缺页异常的完整流程
+□ 能对比 FAT 和 ext2 的设计差异及各自优劣
+□ 能写出生产者-消费者模型的正确线程同步代码
+□ 能列举至少 5 个自己踩过的坑及根因
+□ 能解释为什么中断上下文不能睡眠
+</div></code></pre>
+<h3 id="54-常见面试考试切入点">5.4 常见面试/考试切入点</h3>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>涉及知识点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;线程和进程的区别&quot;</td>
+<td>阶段1 + 阶段3</td>
+</tr>
+<tr>
+<td>&quot;虚拟内存是怎么工作的&quot;</td>
+<td>阶段2 (VA→PA，页表，TLB，缺页)</td>
+</tr>
+<tr>
+<td>&quot;malloc(16) 底层发生了什么&quot;</td>
+<td>阶段2 (slab → buddy → mmap → 缺页)</td>
+</tr>
+<tr>
+<td>&quot;自旋锁和互斥锁什么时候用哪个&quot;</td>
+<td>阶段1 + 阶段5 (中断上下文)</td>
+</tr>
+<tr>
+<td>&quot;fork() 之后父子进程共享什么&quot;</td>
+<td>阶段3 (COW，文件描述符，地址空间)</td>
+</tr>
+<tr>
+<td>&quot;死锁怎么产生的，怎么避免&quot;</td>
+<td>阶段1 (四条件 + lock ordering)</td>
+</tr>
+<tr>
+<td>&quot;系统调用是怎么陷入内核的&quot;</td>
+<td>阶段5 (ecall → trap → trampoline)</td>
+</tr>
+<tr>
+<td>&quot;文件系统怎么找到文件数据&quot;</td>
+<td>阶段4 (目录项 → inode → 数据块)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="六扩展建议">六、扩展建议</h2>
+<blockquote>
+<p>💡 以下内容可在后续学习中逐步添加，不会破坏现有结构。</p>
+</blockquote>
+<h3 id="待补充方向">待补充方向</h3>
+<ul>
+<li><input type="checkbox" id="checkbox0"><label for="checkbox0"><strong>设备驱动模型</strong>：I2C 驱动框架（platform bus + I2C bus）、字符设备注册流程</label></li>
+<li><input type="checkbox" id="checkbox1"><label for="checkbox1"><strong>网络协议栈</strong>：socket → TCP/IP → 驱动层的数据路径</label></li>
+<li><input type="checkbox" id="checkbox2"><label for="checkbox2"><strong>虚拟化技术</strong>：VM、容器、hypervisor 基本原理</label></li>
+<li><input type="checkbox" id="checkbox3"><label for="checkbox3"><strong>实时操作系统 (RTOS)</strong>：优先级反转、死锁检测、确定性调度</label></li>
+<li><input type="checkbox" id="checkbox4"><label for="checkbox4"><strong>Linux 内核机制深入</strong>：RCU、完全公平调度器 (CFS)、cgroup 资源隔离</label></li>
+<li><input type="checkbox" id="checkbox5"><label for="checkbox5"><strong>性能分析工具链</strong>：perf、ftrace、eBPF 基础</label></li>
+<li><input type="checkbox" id="checkbox6"><label for="checkbox6"><strong>安全机制</strong>：ASLR、Stack Canary、KASLR、seccomp</label></li>
+</ul>
+<h3 id="添加新内容的格式建议">添加新内容的格式建议</h3>
+<p>当需要添加新的知识点时，建议遵循以下格式以确保一致性：</p>
+<pre class="hljs"><code><div><span class="hljs-section">### 阶段X：[主题名称]</span>
+
+| 关键词 | 必须掌握 | 注意事项 |
+|--------|---------|---------|
+| <span class="hljs-strong">**概念1**</span> | 核心描述 | ⚠️ 常见误区 |
+| <span class="hljs-strong">**概念2**</span> | 核心描述 | ⚠️ 常见误区 |
+</div></code></pre>
+<hr>
+<h2 id="七参考资料索引">七、参考资料索引</h2>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>用途</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>xv6-riscv 源码</td>
+<td>操作系统实现参考</td>
+<td><code>kernel/</code> 内核代码，<code>user/</code> 用户程序</td>
+</tr>
+<tr>
+<td>xv6 Book</td>
+<td>配套说明文档</td>
+<td>每章对应一个子系统</td>
+</tr>
+<tr>
+<td><code>man</code> 手册 (1-9)</td>
+<td>系统调用/库函数查询</td>
+<td><code>man 2 syscall</code> 查系统调用</td>
+</tr>
+<tr>
+<td><code>elf.h</code> (<code>/usr/include/elf.h</code>)</td>
+<td>ELF 结构定义</td>
+<td><code>readelf -h</code> 配合查看</td>
+</tr>
+<tr>
+<td>《OSTEP》(Operating Systems: Three Easy Pieces)</td>
+<td>三部分：虚拟化、并发、持久化</td>
+<td>经典教材，英文免费</td>
+</tr>
+<tr>
+<td><a href="https://github.com/luo15529172003-wq/-worker-.git">相关实验代码</a></td>
+<td>多线程编程参考</td>
+<td>生产者-消费者模型</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<blockquote>
+<p>📝 <strong>本文档使用指南</strong>：</p>
+<ol>
+<li>初学时按<strong>阶段0→6的顺序</strong>从上往下看</li>
+<li>遇到 bug 先去**第三部分（坑）**查是否有类似情况</li>
+<li>复习时从**第五部分（复习策略）<strong>开始，用</strong>第四部分（速查表）**辅助</li>
+<li>面试前重点过<strong>第二部分的&quot;注意事项&quot;列</strong>和<strong>第五部分的检查清单</strong></li>
+<li>新增内容直接按阶段归类追加，不破坏已有结构</li>
+</ol>
+</blockquote>
+
+</body>
+</html>

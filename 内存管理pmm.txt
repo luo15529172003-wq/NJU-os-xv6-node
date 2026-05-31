@@ -1,0 +1,2000 @@
+你这个实验建议按 三层实现 来做：
+第 1 层：buddy page allocator，管理 4 KiB 及以上的物理页块。第 2 层：slab allocator，管理大量小对象，例如 16/32/64/128 字节。第 3 层：per-CPU cache，减少多处理器抢同一把锁，冲 hard test。
+实验要求的核心是：在 [heap.start, heap.end) 里实现 pmm->alloc(size) 和 pmm->free(ptr)；返回地址必须按“不小于 size 的最小 2 的幂”对齐；找不到空间返回 NULL；可以拒绝超过 16 MiB 的分配；并且允许多个处理器并发调用。测试会大量分配小对象、频繁分配 4 KiB 页，且堆区可能是 64 MiB 到 4 GiB，所以不能只写一个很浪费内存的分配器。
+0. 先明确推荐结构
+你不要一上来写“通用 malloc”。内核里这个实验更适合这样拆：
+kalloc(size)
+ ├── size <= 2048:
+ │     用 slab，从 4 KiB 页里切小块
+ │
+ └── size > 2048:
+       用 buddy，分配 4 KiB / 8 KiB / 16 KiB / ... / 16 MiB 页块
+为什么这样？
+小分配非常多，绝大部分不超过 128 字节。如果你每次 17 字节都分一个 4 KiB 页，会很快把内存浪费光；但如果只用一个全局链表加锁遍历，性能又可能过差。实验文档也提示 hard test 的重点就是多处理器并发和 scalability。
+1. 在 os->init() 里调用 pmm->init()
+Online Judge 会替换 framework/main.c，但保留你的 src/ 和 include/。因此必要初始化必须放在 os->init() 里，而不能依赖你自己写的 main 或 os_run。文档也特别说明测试时会先调用 os->init()，然后直接跑 workload。
+在 src/os.c 里确认有类似代码：
+static void os_init() {
+  pmm->init();
+}
+static void os_run() {
+  printf("Hello World from CPU #%d\n", cpu_current());
+  while (1);
+}
+MODULE_DEF(os) = {
+  .init = os_init,
+  .run = os_run,
+};
+如果你的框架里 CPU 编号函数不叫 cpu_current()，就在 framework/ 或 include/ 里搜一下实际名字。
+2. 先写基础工具函数
+在 src/pmm.c 里先准备这些常量和工具函数。
+#define PAGE_SHIFT 12
+#define PAGE_SIZE  (1UL << PAGE_SHIFT)
+#define MAX_ALLOC  (16UL << 20)   // 16 MiB
+#define MAX_ORDER  12             // 4KiB << 12 = 16MiB
+#define MIN_CLASS_SHIFT 4         // 16 bytes
+#define MAX_CLASS_SHIFT 11        // 2048 bytes
+#define NCLASS (MAX_CLASS_SHIFT - MIN_CLASS_SHIFT + 1)
+static inline uintptr_t align_down(uintptr_t x, uintptr_t a) {
+  return x & ~(a - 1);
+}
+static inline uintptr_t align_up(uintptr_t x, uintptr_t a) {
+  return (x + a - 1) & ~(a - 1);
+}
+static inline int ilog2_ceil(size_t x) {
+  int r = 0;
+  size_t p = 1;
+  while (p < x) {
+    p <<= 1;
+    r++;
+  }
+  return r;
+}
+static inline size_t round_up_pow2(size_t x) {
+  if (x <= 1) return 1;
+  return 1UL << ilog2_ceil(x);
+}
+对齐要求的关键是：
+size_t align = round_up_pow2(size);
+例如：
+size = 17   => align = 32
+size = 4096 => align = 4096
+size = 5000 => align = 8192
+3. 不要把 metadata 放成超大静态数组
+实验会检查静态内存大小，代码、data、bss 总量不能超过 1 MiB；管理堆的数据结构应该从堆区里拿，而不是写成巨大的全局数组。
+所以不要这样：
+// 不推荐，4 GiB / 4 KiB = 1048576 页，数组会很大
+static struct page pages[1048576];
+正确做法是：在 pmm_init() 里从 heap.start 开头切一段做 metadata。
+我们给每个 4 KiB 页一个 struct page：
+enum {
+  PG_UNUSED = 0,
+  PG_FREE,
+  PG_LARGE,
+  PG_SLAB,
+  PG_TAIL,
+};
+struct page {
+  unsigned char flag;
+  unsigned char order;
+  unsigned char class_id;
+  unsigned short inuse;
+  unsigned short total;
+  void *free_list;           // slab 页里的空闲 object 链表
+  struct page *prev, *next;  // slab partial list
+};
+struct free_block {
+  struct free_block *next;
+};
+全局变量只保留很小的状态：
+static struct page *pages;
+static size_t nr_pages;
+static uintptr_t pool_start;
+static uintptr_t pool_end;
+static struct free_block *buddy_free[MAX_ORDER + 1];
+typedef struct {
+  volatile int locked;
+} spinlock_t;
+static spinlock_t buddy_lock;
+static spinlock_t slab_lock[NCLASS];
+static struct page *slab_partial[NCLASS];
+锁可以先用 GCC 原子内建函数实现：
+static inline void lock(spinlock_t *lk) {
+  while (__sync_lock_test_and_set(&lk->locked, 1)) {
+    while (lk->locked);
+  }
+}
+static inline void unlock(spinlock_t *lk) {
+  __sync_lock_release(&lk->locked);
+}
+如果课程框架提供了 atomic_xchg()，也可以用它写 spinlock。
+4. 初始化堆区和 metadata
+pmm_init() 要做四件事：
+把 heap.start/end 按 4 KiB 对齐。
+从堆开头切出 metadata。
+把真正可分配区 pool_start 对齐到 16 MiB。
+把剩余内存加入 buddy free list。
+为什么要把 pool_start 对齐到 16 MiB？
+因为最大允许分配 16 MiB。buddy allocator 如果从 16 MiB 对齐地址开始管理，那么它分出的 4 KiB、8 KiB、16 KiB、……、16 MiB 块天然满足对应大小的地址对齐要求。
+static inline size_t page_id(void *p) {
+  return ((uintptr_t)p - pool_start) >> PAGE_SHIFT;
+}
+static inline void *page_addr(size_t id) {
+  return (void *)(pool_start + (id << PAGE_SHIFT));
+}
+初始化代码骨架：
+static void buddy_add_block(size_t id, int order);
+static void init_buddy_range(uintptr_t start, uintptr_t end) {
+  uintptr_t p = start;
+  while (p + PAGE_SIZE <= end) {
+    int order = MAX_ORDER;
+    while (order > 0) {
+      uintptr_t sz = PAGE_SIZE << order;
+      if ((p % sz) == 0 && p + sz <= end) break;
+      order--;
+    }
+    buddy_add_block((p - pool_start) >> PAGE_SHIFT, order);
+    p += PAGE_SIZE << order;
+  }
+}
+static void pmm_init() {
+  uintptr_t hs = align_up((uintptr_t)heap.start, PAGE_SIZE);
+  uintptr_t he = align_down((uintptr_t)heap.end, PAGE_SIZE);
+  size_t raw_pages = (he - hs) / PAGE_SIZE;
+  pages = (struct page *)hs;
+  size_t meta_bytes = align_up(raw_pages * sizeof(struct page), PAGE_SIZE);
+  pool_start = align_up(hs + meta_bytes, MAX_ALLOC);
+  pool_end = he;
+  if (pool_start >= pool_end) {
+    nr_pages = 0;
+    return;
+  }
+  nr_pages = (pool_end - pool_start) / PAGE_SIZE;
+  memset(pages, 0, meta_bytes);
+  init_buddy_range(pool_start, pool_end);
+  printf("pmm: heap [%p, %p), pool [%p, %p), pages=%d\n",
+         heap.start, heap.end,
+         (void *)pool_start, (void *)pool_end,
+         nr_pages);
+}
+5. 实现 buddy allocator
+buddy 管理的是 4 KiB 到 16 MiB 的页块：
+order 0: 4 KiB
+order 1: 8 KiB
+order 2: 16 KiB
+...
+order 12: 16 MiB
+5.1 加入一个空闲块
+static void buddy_add_block(size_t id, int order) {
+  pages[id].flag = PG_FREE;
+  pages[id].order = order;
+  size_t cnt = 1UL << order;
+  for (size_t i = 1; i < cnt && id + i < nr_pages; i++) {
+    pages[id + i].flag = PG_TAIL;
+  }
+  struct free_block *b = (struct free_block *)page_addr(id);
+  b->next = buddy_free[order];
+  buddy_free[order] = b;
+}
+5.2 从 free list 删除某个块
+buddy 合并时需要把 buddy 块从链表里拿掉。
+static int buddy_remove_block(size_t id, int order) {
+  struct free_block **pp = &buddy_free[order];
+  void *addr = page_addr(id);
+  while (*pp) {
+    if ((void *)(*pp) == addr) {
+      *pp = (*pp)->next;
+      return 1;
+    }
+    pp = &(*pp)->next;
+  }
+  return 0;
+}
+5.3 分配页块
+static void *buddy_alloc_pages(int order) {
+  lock(&buddy_lock);
+  int o = order;
+  while (o <= MAX_ORDER && buddy_free[o] == NULL) {
+    o++;
+  }
+  if (o > MAX_ORDER) {
+    unlock(&buddy_lock);
+    return NULL;
+  }
+  struct free_block *b = buddy_free[o];
+  buddy_free[o] = b->next;
+  size_t id = page_id(b);
+  while (o > order) {
+    o--;
+    size_t right = id + (1UL << o);
+    buddy_add_block(right, o);
+  }
+  pages[id].flag = PG_LARGE;
+  pages[id].order = order;
+  size_t cnt = 1UL << order;
+  for (size_t i = 1; i < cnt && id + i < nr_pages; i++) {
+    pages[id + i].flag = PG_TAIL;
+  }
+  unlock(&buddy_lock);
+  return (void *)b;
+}
+5.4 释放页块并尝试合并
+static void buddy_free_pages(void *ptr) {
+  if (ptr == NULL) return;
+  lock(&buddy_lock);
+  size_t id = page_id(ptr);
+  int order = pages[id].order;
+  while (order < MAX_ORDER) {
+    size_t buddy = id ^ (1UL << order);
+    if (buddy >= nr_pages) break;
+    if (pages[buddy].flag != PG_FREE) break;
+    if (pages[buddy].order != order) break;
+    if (!buddy_remove_block(buddy, order)) break;
+    if (buddy < id) id = buddy;
+    order++;
+  }
+  buddy_add_block(id, order);
+  unlock(&buddy_lock);
+}
+这样你已经有了能处理大块分配的核心。
+6. 实现 slab allocator 处理小对象
+小对象使用 size class：
+class 0: 16 bytes
+class 1: 32 bytes
+class 2: 64 bytes
+class 3: 128 bytes
+...
+class 7: 2048 bytes
+6.1 计算 size class
+static int class_for_size(size_t size) {
+  size_t need = round_up_pow2(size);
+  if (need < (1UL << MIN_CLASS_SHIFT)) {
+    need = 1UL << MIN_CLASS_SHIFT;
+  }
+  if (need > (1UL << MAX_CLASS_SHIFT)) {
+    return -1;
+  }
+  int shift = ilog2_ceil(need);
+  return shift - MIN_CLASS_SHIFT;
+}
+static inline size_t class_size(int class_id) {
+  return 1UL << (MIN_CLASS_SHIFT + class_id);
+}
+6.2 slab 页链表操作
+static void slab_list_add(int cid, struct page *p) {
+  p->prev = NULL;
+  p->next = slab_partial[cid];
+  if (p->next) {
+    p->next->prev = p;
+  }
+  slab_partial[cid] = p;
+}
+static void slab_list_remove(int cid, struct page *p) {
+  if (p->prev) {
+    p->prev->next = p->next;
+  } else {
+    slab_partial[cid] = p->next;
+  }
+  if (p->next) {
+    p->next->prev = p->prev;
+  }
+  p->prev = p->next = NULL;
+}
+6.3 初始化一个 slab 页
+从 buddy 拿一个 4 KiB 页，然后切成固定大小的小块。
+static struct page *slab_new_page(int cid) {
+  void *mem = buddy_alloc_pages(0);
+  if (mem == NULL) return NULL;
+  size_t id = page_id(mem);
+  struct page *p = &pages[id];
+  size_t sz = class_size(cid);
+  size_t n = PAGE_SIZE / sz;
+  p->flag = PG_SLAB;
+  p->order = 0;
+  p->class_id = cid;
+  p->inuse = 0;
+  p->total = n;
+  p->prev = p->next = NULL;
+  char *base = (char *)mem;
+  p->free_list = NULL;
+  for (size_t i = 0; i < n; i++) {
+    void *obj = base + i * sz;
+    *(void **)obj = p->free_list;
+    p->free_list = obj;
+  }
+  return p;
+}
+6.4 slab 分配
+static void *slab_alloc(int cid) {
+retry:
+  lock(&slab_lock[cid]);
+  struct page *p = slab_partial[cid];
+  if (p == NULL) {
+    unlock(&slab_lock[cid]);
+    p = slab_new_page(cid);
+    if (p == NULL) return NULL;
+    lock(&slab_lock[cid]);
+    slab_list_add(cid, p);
+  }
+  p = slab_partial[cid];
+  void *obj = p->free_list;
+  p->free_list = *(void **)obj;
+  p->inuse++;
+  if (p->free_list == NULL) {
+    slab_list_remove(cid, p);
+  }
+  unlock(&slab_lock[cid]);
+  return obj;
+}
+6.5 slab 释放
+释放时不需要知道原来的 size，只需要通过地址找到它属于哪个 4 KiB 页，再看这个页的 metadata。
+static void slab_free(void *ptr) {
+  size_t id = page_id(ptr);
+  struct page *p = &pages[id];
+  int cid = p->class_id;
+  lock(&slab_lock[cid]);
+  int was_full = (p->free_list == NULL);
+  *(void **)ptr = p->free_list;
+  p->free_list = ptr;
+  p->inuse--;
+  if (was_full) {
+    slab_list_add(cid, p);
+  }
+  if (p->inuse == 0) {
+    slab_list_remove(cid, p);
+    p->flag = PG_LARGE;
+    p->order = 0;
+    unlock(&slab_lock[cid]);
+    buddy_free_pages(page_addr(id));
+    return;
+  }
+  unlock(&slab_lock[cid]);
+}
+这个版本“空 slab 页立刻还给 buddy”，正确性比较简单。后面做性能优化时，可以改成“每个 class 保留少量空页”，避免频繁 buddy 分配/释放。
+7. 最终 kalloc 和 kfree
+static void *kalloc(size_t size) {
+  if (size == 0) return NULL;
+  if (size > MAX_ALLOC) return NULL;
+  int cid = class_for_size(size);
+  if (cid >= 0) {
+    return slab_alloc(cid);
+  }
+  size_t need = round_up_pow2(size);
+  if (need < PAGE_SIZE) {
+    need = PAGE_SIZE;
+  }
+  int order = ilog2_ceil(need) - PAGE_SHIFT;
+  if (order < 0 || order > MAX_ORDER) {
+    return NULL;
+  }
+  return buddy_alloc_pages(order);
+}
+static void kfree(void *ptr) {
+  if (ptr == NULL) return;
+  uintptr_t a = (uintptr_t)ptr;
+  if (a < pool_start || a >= pool_end) {
+    return; // 实验说非法 free 是 undefined behavior；这里可直接忽略或 assert
+  }
+  size_t id = page_id(ptr);
+  if (pages[id].flag == PG_SLAB) {
+    slab_free(ptr);
+  } else {
+    buddy_free_pages(ptr);
+  }
+}
+最后模块定义：
+MODULE_DEF(pmm) = {
+  .init = pmm_init,
+  .alloc = kalloc,
+  .free = kfree,
+};
+8. hard test 优化：加 per-CPU cache
+上面版本已经比“全局链表遍历”好很多，但小对象分配仍然会抢 slab_lock[cid]。hard test 可能会卡在这里。实验文档也提示现代 malloc 的思路是区分 fast path / slow path，让 fast path 在线程本地完成，从而减少锁竞争。
+你可以在 slab 前面加一层 per-CPU cache：
+#define MAX_CPU 8
+#define CACHE_LIMIT 64
+#define REFILL_BATCH 32
+struct cpu_cache {
+  void *head[NCLASS];
+  int count[NCLASS];
+};
+static struct cpu_cache cpu_cache[MAX_CPU];
+分配时：
+static void *cache_pop(int cpu, int cid) {
+  void *p = cpu_cache[cpu].head[cid];
+  if (p) {
+    cpu_cache[cpu].head[cid] = *(void **)p;
+    cpu_cache[cpu].count[cid]--;
+  }
+  return p;
+}
+static void cache_push(int cpu, int cid, void *p) {
+  *(void **)p = cpu_cache[cpu].head[cid];
+  cpu_cache[cpu].head[cid] = p;
+  cpu_cache[cpu].count[cid]++;
+}
+然后改 kalloc：
+if (cid >= 0) {
+  int cpu = cpu_current();
+  void *p = cache_pop(cpu, cid);
+  if (p) return p;
+  for (int i = 0; i < REFILL_BATCH; i++) {
+    void *x = slab_alloc(cid);
+    if (!x) break;
+    cache_push(cpu, cid, x);
+  }
+  return cache_pop(cpu, cid);
+}
+改 kfree 的 slab 分支：
+if (pages[id].flag == PG_SLAB) {
+  int cid = pages[id].class_id;
+  int cpu = cpu_current();
+  cache_push(cpu, cid, ptr);
+  if (cpu_cache[cpu].count[cid] > CACHE_LIMIT) {
+    for (int i = 0; i < REFILL_BATCH; i++) {
+      void *x = cache_pop(cpu, cid);
+      if (!x) break;
+      slab_free(x);
+    }
+  }
+  return;
+}
+这个优化的效果是：
+常见小对象 alloc/free：
+  只访问当前 CPU 的 cache，不拿全局锁。
+cache 空了：
+  才批量从 slab 拿一批。
+cache 太满：
+  才批量还给 slab。
+因为这个实验当前还没有中断抢占，通常每个 CPU 上只有一条执行流，所以 per-CPU cache 可以不加锁。保守一点也可以给每个 cpu_cache[cpu][cid] 加锁。
+9. 你应该按这个顺序测试
+不要直接冲 hard test。建议这样验收：
+第一步：单线程基础测试
+测试这些 size：
+1, 2, 7, 8, 9, 15, 16, 17,
+31, 32, 33,
+63, 64, 65,
+127, 128, 129,
+2048, 2049,
+4096, 4097,
+1 MiB, 16 MiB, 16 MiB + 1
+检查：
+void *p = pmm->alloc(size);
+size_t align = round_up_pow2(size);
+assert(p == NULL || ((uintptr_t)p % align == 0));
+第二步：分配后写入
+char *p = pmm->alloc(128);
+assert(p);
+for (int i = 0; i < 128; i++) p[i] = 0x5a;
+pmm->free(p);
+能发现很多“两个分配重叠”的 bug。
+第三步：释放后重分配
+void *a = pmm->alloc(64);
+void *b = pmm->alloc(64);
+pmm->free(a);
+void *c = pmm->alloc(64);
+assert(c != NULL);
+不一定要求 c == a，但至少不能失败，也不能和未释放的 b 重叠。
+第四步：多处理器压力测试
+用：
+make run ARCH=x86_64-qemu smp=4
+实验文档也说明可以通过 smp=2、smp=4 启动多个处理器。
+每个 CPU 循环随机分配/释放，记录自己手里的指针：
+#define N 1024
+static void *ptrs[N];
+static void worker() {
+  int cpu = cpu_current();
+  for (int i = 0; ; i++) {
+    int k = rand() % N;
+    if (ptrs[k]) {
+      pmm->free(ptrs[k]);
+      ptrs[k] = NULL;
+    } else {
+      size_t sz = 1 + rand() % 4096;
+      ptrs[k] = pmm->alloc(sz);
+      if (ptrs[k]) {
+        memset(ptrs[k], cpu, sz);
+      }
+    }
+  }
+}
+注意：测试里的 ptrs 如果被多个 CPU 共享，必须加锁；否则测试本身有数据竞争，会误判你的 pmm。
+10. 最容易踩的坑
+坑 1：没有在 os->init() 调 pmm->init()。OJ 会替换 main.c，所以你自己的 main 或 os_run 初始化不可靠。
+坑 2：metadata 写成巨大静态数组。4 GiB 堆有 1,048,576 个 4 KiB 页，静态数组很容易超过 1 MiB 限制。metadata 应该从 heap 里切。
+坑 3：pool_start 没有按 16 MiB 对齐。这样 16 MiB 或 8 MiB 分配可能返回不满足对齐要求的地址。
+坑 4：小对象每个都用 buddy 分 4 KiB。正确性可能没问题，但 liveness 很差；大量 17 字节分配会浪费严重。
+坑 5：给用户指针前面塞 header。这会让对齐和 kfree(ptr) 变复杂。更推荐用 page metadata：通过 ptr 算出所在页，再知道它是 slab object 还是 large block。
+坑 6：锁顺序混乱导致死锁。建议保持简单规则：slab_lock[class] 只保护 slab 页链表；buddy_lock 只保护 buddy。需要向 buddy 还页时，先把 slab 状态改完，再释放 slab 锁，然后调用 buddy_free_pages()。
+推荐实现路线
+先写：
+buddy only + kfree
+能分配/释放 4 KiB 以上块。
+再写：
+slab + buddy
+解决小对象浪费问题。
+最后写：
+per-CPU cache
+解决 hard test 的锁竞争问题。
+这套结构和实验 workload 是匹配的：小对象走 slab/per-CPU fast path，页面和大块走 buddy，metadata 放在 heap 内，kfree(ptr) 通过 page metadata 找回块类型和大小。
+下面我换一种“从零理解”的讲法。你可以先把这个实验想成：
+老师给你一大段连续物理内存 [heap.start, heap.end)，你要在里面自己实现一个内核版 malloc/free。kalloc(size) 返回一段不和别人重叠的内存；kfree(ptr) 把之前分出去的内存收回来。还要满足对齐、多处理器并发、静态内存不能太大、hard test 有大量小对象分配等要求。实验文档明确要求分配发生在 heap 内、返回地址满足对齐、找不到空间返回 NULL、允许拒绝超过 16 MiB 的分配，并且多个处理器可以并行调用分配和释放函数。
+上次我直接给了 struct page，确实跳得太快。我们先从“为什么需要它”讲起。
+1. 这个实验到底在维护什么？
+你要维护的是一段物理内存：
+heap.start                                      heap.end
+   |-----------------------------------------------|
+                 你可以管理的物理内存
+每次 kalloc(size)，你要从里面切一块出去：
+heap.start                                      heap.end
+   |------used------|----free----|--used--|----------free----------|
+每次 kfree(ptr)，你要把某块重新标记为空闲：
+heap.start                                      heap.end
+   |------free------|----free----|--used--|----------free----------|
+最朴素的做法是维护一个“空闲区间链表”：
+struct interval {
+  uintptr_t start;
+  uintptr_t end;
+  struct interval *next;
+};
+分配的时候遍历空闲区间，找到够大的就切一段；释放的时候把区间插回去，尝试合并。
+这种做法理论上可行，但有几个问题：
+性能差：分配时可能要遍历很长的链表。
+并发差：多处理器同时分配时，如果用一把大锁保护链表，hard test 很可能性能不够。
+对齐麻烦：实验要求 size=17 时地址必须 32 字节对齐，size=4096 时必须 4096 字节对齐。
+小对象浪费/碎片问题严重：如果大量分配 16、32、64 字节对象，用普通区间切割很容易产生碎片。
+所以更适合用操作系统里常见的两层结构：
+大块内存：buddy allocator
+小对象：slab allocator
+其中 buddy 以“页”为单位管理，slab 把一个页切成很多小对象。
+2. 为什么以 4 KiB 页为基本单位？
+物理内存管理通常以 page，也就是页为基本单位。这里默认一页是 4 KiB：
+#define PAGE_SHIFT 12
+#define PAGE_SIZE  (1UL << PAGE_SHIFT)   // 4096
+我们不把整段 heap 看成一堆任意字节，而是看成很多连续的 4 KiB 页：
+pool_start
+   |
+   v
+   +---------+---------+---------+---------+---------+
+   | page 0  | page 1  | page 2  | page 3  | page 4  | ...
+   +---------+---------+---------+---------+---------+
+     4 KiB     4 KiB     4 KiB     4 KiB     4 KiB
+这样有两个好处：
+第一，大块分配很好做。比如要分配 16 KiB，就是连续 4 页。
+16 KiB = 4 * 4 KiB
+第二，小对象分配也很好做。比如拿一个 4 KiB 页，切成 64 个 64 字节对象：
+一个 4 KiB 页：
++----+----+----+----+----+----+ ... +----+
+|64B |64B |64B |64B |64B |64B |     |64B |
++----+----+----+----+----+----+ ... +----+
+这就是 slab 的基本思想。
+3. 为什么需要 struct page？
+这是最关键的一步。
+你会遇到一个问题：kfree(ptr) 只给你一个指针，没有告诉你当初分配了多大。
+void kfree(void *ptr);
+比如用户调用：
+void *a = kalloc(64);
+void *b = kalloc(8192);
+kfree(a);
+kfree(b);
+当 kfree(a) 被调用时，你只知道 a 的地址，不知道：
+a 当初是 64 字节？
+a 属于哪个 slab 页？
+这个 slab 页还有多少对象正在使用？
+当 kfree(b) 被调用时，你也不知道：
+b 当初是 8192 字节？
+它占了几个页？
+释放后能不能和旁边的空闲块合并？
+所以你必须在某个地方记录“每个分配块的信息”。
+常见做法有两种。
+做法 A：在返回给用户的内存前面塞 header
+比如：
+实际分配的内存：
++----------+-------------------+
+| header   | user memory       |
++----------+-------------------+
+           ^
+           返回给用户的 ptr
+header 里记录大小、状态等。
+但这个实验里不太推荐，因为它会破坏对齐。
+比如用户要 4096 字节，并且返回地址必须 4096 对齐。如果你在前面塞 16 字节 header，那么用户地址就可能变成：
+page_base + 16
+这就不是 4096 对齐了。
+当然可以通过 padding 修正，但代码会复杂很多。
+做法 B：给每个 4 KiB 页配一个 metadata
+这就是 struct page 的作用。
+我们为每个物理页准备一个“小档案”：
+struct page {
+  ...
+};
+然后有一个数组：
+static struct page *pages;
+它的含义是：
+pages[0]  描述 pool_start + 0 * 4096 这个页
+pages[1]  描述 pool_start + 1 * 4096 这个页
+pages[2]  描述 pool_start + 2 * 4096 这个页
+...
+对应关系如下：
+metadata 区：
+pages[0]   pages[1]   pages[2]   pages[3]
+   |          |          |          |
+   v          v          v          v
+真实内存区：
++---------+---------+---------+---------+
+| page 0  | page 1  | page 2  | page 3  |
++---------+---------+---------+---------+
+也就是说，struct page 本身不是用户可用内存，它是“记录页状态的账本”。
+4. struct page 每个字段到底是什么意思？
+上次给的是：
+enum {
+  PG_UNUSED = 0,
+  PG_FREE,
+  PG_LARGE,
+  PG_SLAB,
+  PG_TAIL,
+};
+struct page {
+  unsigned char flag;
+  unsigned char order;
+  unsigned char class_id;
+  unsigned short inuse;
+  unsigned short total;
+  void *free_list;
+  struct page *prev, *next;
+};
+现在逐个讲。
+4.1 flag：这个页现在是什么身份？
+unsigned char flag;
+它表示这个页的状态。
+我们定义几种状态：
+enum {
+  PG_UNUSED = 0,
+  PG_FREE,
+  PG_LARGE,
+  PG_SLAB,
+  PG_TAIL,
+};
+分别表示：
+PG_UNUSED:
+  还没被纳入管理，或者暂时不用。
+PG_FREE:
+  这是一个 buddy 空闲块的第一页。
+PG_LARGE:
+  这是一个大块已分配内存的第一页。
+  例如 kalloc(8192) 分到两个页，第一页标 PG_LARGE。
+PG_SLAB:
+  这个页被切成了很多小对象。
+  例如一个页切成 64 个 64B 对象。
+PG_TAIL:
+  这个页不是某个块的第一页，而是后续页。
+举个例子。
+如果 buddy 分配了 16 KiB，也就是 4 个连续页：
++---------+---------+---------+---------+
+| page 8  | page 9  | page 10 | page 11 |
++---------+---------+---------+---------+
+我们只在第一个页记录这个块的主要信息：
+pages[8].flag  = PG_LARGE
+pages[8].order = 2          // 4 KiB << 2 = 16 KiB
+pages[9].flag  = PG_TAIL
+pages[10].flag = PG_TAIL
+pages[11].flag = PG_TAIL
+为什么后面的页是 PG_TAIL？
+因为它们不是一个独立分配块的开头。合法的 kfree(ptr) 应该传入当初 kalloc 返回的左端点，也就是 page 8 的地址，不应该传 page 9 的地址。实验也说明，如果 kfree 的参数不是某个已有区间的左端点，就是 undefined behavior。
+4.2 order：buddy 块有多大？
+unsigned char order;
+buddy allocator 只分配 2 的幂大小的页块。
+我们定义：
+order 0: 4 KiB
+order 1: 8 KiB
+order 2: 16 KiB
+order 3: 32 KiB
+...
+order 12: 16 MiB
+公式是：
+block_size = PAGE_SIZE << order;
+比如：
+order = 0  => 4096 << 0 = 4096      = 4 KiB
+order = 1  => 4096 << 1 = 8192      = 8 KiB
+order = 2  => 4096 << 2 = 16384     = 16 KiB
+order = 12 => 4096 << 12 = 16777216 = 16 MiB
+所以当我们看到：
+pages[id].order = 3;
+就知道这个块大小是：
+4 KiB << 3 = 32 KiB
+为什么需要这个字段？
+因为 kfree(ptr) 时需要知道释放多大。
+比如：
+void *p = kalloc(20000);
+20000 会向上取到 32768，也就是 32 KiB。
+释放时：
+kfree(p);
+此时 kfree 没有 size 参数，但可以通过：
+size_t id = page_id(p);
+int order = pages[id].order;
+知道它是 32 KiB。
+4.3 class_id：slab 小对象属于哪个大小类别？
+unsigned char class_id;
+slab allocator 不直接处理任意大小，而是按 size class 分类：
+class 0: 16 bytes
+class 1: 32 bytes
+class 2: 64 bytes
+class 3: 128 bytes
+class 4: 256 bytes
+class 5: 512 bytes
+class 6: 1024 bytes
+class 7: 2048 bytes
+比如用户请求：
+kalloc(17);
+17 字节不能放进 16B class，所以进入 32B class。
+17 -> 32 bytes -> class 1
+用户请求：
+kalloc(100);
+100 字节进入 128B class。
+100 -> 128 bytes -> class 3
+一个 slab 页只服务一种大小的对象。
+比如一个 4 KiB 页被切成 64B 对象：
+page X:
++-----+-----+-----+-----+ ... +-----+
+| 64B | 64B | 64B | 64B |     | 64B |
++-----+-----+-----+-----+ ... +-----+
+那么：
+pages[X].flag = PG_SLAB;
+pages[X].class_id = 2;  // 64B class
+释放一个小对象时：
+kfree(ptr);
+我们先通过地址找到它在哪个页：
+size_t id = page_id(ptr);
+然后看：
+pages[id].class_id
+就知道这个对象应该重新放回哪个 slab free list。
+4.4 inuse：这个 slab 页里有多少对象正在使用？
+unsigned short inuse;
+假设一个 4 KiB 页被切成 64 个 64B 对象：
+total = 64
+一开始还没人用：
+inuse = 0
+分配出去一个对象：
+inuse = 1
+分配出去 10 个：
+inuse = 10
+释放一个：
+inuse = 9
+当：
+inuse == 0
+说明这个 slab 页里没有任何对象被使用，整个页可以还给 buddy allocator。
+这很重要。
+否则小对象释放后，页永远不归还，大量小对象申请/释放后，系统可能慢慢耗尽物理页。
+4.5 total：这个 slab 页最多有多少对象？
+unsigned short total;
+这个字段记录当前页被切成了多少个对象。
+比如：
+class size = 16B    => total = 4096 / 16   = 256
+class size = 32B    => total = 4096 / 32   = 128
+class size = 64B    => total = 4096 / 64   = 64
+class size = 128B   => total = 4096 / 128  = 32
+class size = 2048B  => total = 4096 / 2048 = 2
+严格来说，有些实现可以不存 total，因为可以通过 class_id 算出来。但存下来更方便调试，也便于以后扩展。
+4.6 free_list：这个 slab 页里还有哪些小对象空着？
+void *free_list;
+对于 slab 页，我们需要知道这个页里哪些对象是空闲的。
+例如一个 64B slab 页：
++-----+-----+-----+-----+-----+ ... |
+| obj | obj | obj | obj | obj |     |
++-----+-----+-----+-----+-----+ ... |
+我们把空闲对象串成链表：
+free_list
+   |
+   v
+ obj7 -> obj3 -> obj19 -> obj1 -> NULL
+那么分配时，只要从链表头拿一个：
+void *obj = p->free_list;
+p->free_list = *(void **)obj;
+释放时，把对象插回链表头：
+*(void **)ptr = p->free_list;
+p->free_list = ptr;
+这里有一个巧妙点：空闲对象本身已经没人使用了，所以可以把它的前 8 字节拿来存 next 指针。
+比如一个 64B 对象空闲时：
++----------------+--------------------------+
+| next pointer   | unused                   |
++----------------+--------------------------+
+等它被分配给用户后，这 64B 全部归用户使用，我们不再读里面的 next 指针。
+这叫 intrusive free list，内存分配器里很常见。
+4.7 prev, next：把 slab 页串成链表
+struct page *prev, *next;
+一个 size class 可能有很多 slab 页。
+比如 64B class 可能有这些页：
+page 10: 还有空闲对象
+page 25: 还有空闲对象
+page 80: 还有空闲对象
+我们需要一个链表记录“还有空位的 slab 页”：
+slab_partial[64B] -> page10 -> page25 -> page80 -> NULL
+prev 和 next 就是用来把这些 struct page 串起来的。
+为什么只记录“还有空位”的页？
+因为分配时只关心哪里还能分对象。
+如果某个页已经满了：
+inuse == total
+那它暂时不能分配，就不必留在 partial list 里。
+等以后某个对象被释放，这个页又有空位了，再把它放回 partial list。
+5. pages 数组为什么不能写成静态大数组？
+你可能会想：
+static struct page pages[1048576];
+这样不是很方便吗？
+不行，主要原因是实验限制静态内存大小。实验文档规定 64-bit 模式下代码、data、bss 总量不能超过 1 MiB，管理堆区的数据结构应放在堆区中，而不是静态区。测试堆区可能最多到 4 GiB。
+算一下：
+4 GiB / 4 KiB = 1,048,576 页
+如果每个 struct page 是 32 字节：
+1,048,576 * 32 = 33,554,432 bytes = 32 MiB
+静态区肯定超了。
+所以我们只声明一个指针：
+static struct page *pages;
+然后在 pmm_init() 里，从 heap 开头切一段内存给 metadata：
+heap.start
+   |
+   v
++----------------------+--------------------+-----------------------------+
+| pages metadata       | alignment padding  | real allocatable pool       |
++----------------------+--------------------+-----------------------------+
+                       ^
+                       pool_start
+也就是说，pages 这个数组本身放在 heap 里。
+6. pmm_init() 的内存布局原理
+初始化的目标是把 heap 分成两部分：
+heap.start                                                    heap.end
+   |--------------------------------------------------------------|
+   | metadata for pages | padding | buddy/slab managed memory pool |
+   |--------------------------------------------------------------|
+                         ^
+                         pool_start
+其中：
+pages = (struct page *)hs;
+表示 pages 数组从 heap 开头开始放。
+然后计算 metadata 需要多少字节：
+size_t raw_pages = (he - hs) / PAGE_SIZE;
+size_t meta_bytes = align_up(raw_pages * sizeof(struct page), PAGE_SIZE);
+为什么 metadata 要按页对齐？
+因为 metadata 后面的真正可分配区域最好从页边界开始，否则后面 buddy 管理会很麻烦。
+然后：
+pool_start = align_up(hs + meta_bytes, MAX_ALLOC);
+这里故意把 pool_start 对齐到 16 MiB。
+原因是实验允许你直接拒绝超过 16 MiB 的分配，所以我们最大只需要保证到 16 MiB 的对齐。只要整个 buddy 管理区从 16 MiB 对齐位置开始，那么之后拆出来的 8 MiB、4 MiB、2 MiB、4 KiB 等块天然都满足对应大小的对齐要求。
+7. page_id() 和 page_addr() 是什么？
+这两个函数非常重要。
+static inline size_t page_id(void *p) {
+  return ((uintptr_t)p - pool_start) >> PAGE_SHIFT;
+}
+static inline void *page_addr(size_t id) {
+  return (void *)(pool_start + (id << PAGE_SHIFT));
+}
+它们是一对反函数。
+如果你有一个地址：
+ptr = pool_start + 123 * 4096
+那么：
+page_id(ptr) == 123
+如果你有一个页号：
+id = 123
+那么：
+page_addr(123) == pool_start + 123 * 4096
+它们的意义是：
+真实内存地址 <-> pages 数组下标
+比如：
+void *p = kalloc(64);
+size_t id = page_id(p);
+struct page *meta = &pages[id];
+这样就可以通过用户指针找到对应页的 metadata。
+这也是为什么 struct page 方案很适合 kfree(ptr)：kfree 不需要 size，只需要通过 ptr 找到页，再通过页 metadata 找回信息。
+8. Buddy allocator 的核心思想
+buddy allocator 用来管理大块内存。
+它只管理 2 的幂大小的块：
+4 KiB, 8 KiB, 16 KiB, 32 KiB, ..., 16 MiB
+每一种大小有一个 free list：
+static struct free_block *buddy_free[MAX_ORDER + 1];
+可以理解成：
+buddy_free[0] -> 所有空闲 4 KiB 块
+buddy_free[1] -> 所有空闲 8 KiB 块
+buddy_free[2] -> 所有空闲 16 KiB 块
+...
+buddy_free[12] -> 所有空闲 16 MiB 块
+8.1 什么是 order？
+仍然是这个公式：
+block_size = 4 KiB << order
+所以：
+order 0: 1 页
+order 1: 2 页
+order 2: 4 页
+order 3: 8 页
+假设页号是这样：
+page 0 page 1 page 2 page 3 page 4 page 5 page 6 page 7
+一个 order 2 块占 4 页：
+order 2 block:
++--------+--------+--------+--------+
+| page 0 | page 1 | page 2 | page 3 |
++--------+--------+--------+--------+
+8.2 分配时如何拆块？
+假设你要分配 8 KiB，也就是 order 1。
+但当前没有空闲的 order 1 块，只有一个 order 3 块：
+order 3: 32 KiB
++--------+--------+--------+--------+--------+--------+--------+--------+
+| page 0 | page 1 | page 2 | page 3 | page 4 | page 5 | page 6 | page 7 |
++--------+--------+--------+--------+--------+--------+--------+--------+
+buddy 会把它拆成两个 order 2 块：
+order 2: 16 KiB                  order 2: 16 KiB
++--------+--------+--------+--------+--------+--------+--------+--------+
+| page 0 | page 1 | page 2 | page 3 | page 4 | page 5 | page 6 | page 7 |
++--------+--------+--------+--------+--------+--------+--------+--------+
+再把左边继续拆成两个 order 1 块：
+order 1: 8 KiB   order 1: 8 KiB
++--------+--------+--------+--------+
+| page 0 | page 1 | page 2 | page 3 |
++--------+--------+--------+--------+
+最后拿一个给用户，另一个放回 free list。
+这就是代码里的：
+while (o > order) {
+  o--;
+  size_t right = id + (1UL << o);
+  buddy_add_block(right, o);
+}
+含义是：
+从大块不断劈成两半；
+左半边继续劈；
+右半边放回对应 order 的空闲链表。
+8.3 为什么 buddy 容易合并？
+buddy 的“buddy”就是“伙伴块”。
+两个相邻的、大小相同的块，如果它们本来是从同一个大块拆出来的，就可以合并。
+例如两个 order 1 块：
+order 1 buddy pair:
++--------+--------+--------+--------+
+| page 0 | page 1 | page 2 | page 3 |
++--------+--------+--------+--------+
+|--- A ---|        |--- B ---|
+A 是 page 0 开始，B 是 page 2 开始。
+它们都空闲时，可以合并成一个 order 2 块：
+order 2:
++--------+--------+--------+--------+
+| page 0 | page 1 | page 2 | page 3 |
++--------+--------+--------+--------+
+buddy 的页号计算非常漂亮：
+buddy = id ^ (1UL << order);
+比如 order 1 时，一个块占：
+1 << 1 = 2 页
+page 0 的 buddy：
+0 ^ 2 = 2
+page 2 的 buddy：
+2 ^ 2 = 0
+order 2 时，一个块占：
+1 << 2 = 4 页
+page 0 的 buddy 是 page 4：
+0 ^ 4 = 4
+page 4 的 buddy 是 page 0：
+4 ^ 4 = 0
+所以释放时可以这样做：
+while (order < MAX_ORDER) {
+  size_t buddy = id ^ (1UL << order);
+  if (buddy 不存在) break;
+  if (buddy 不是空闲块) break;
+  if (buddy 的 order 不等于当前 order) break;
+  把 buddy 从 free list 里删掉；
+  当前块和 buddy 合并成更大的块；
+  order++;
+}
+这就是 buddy 的核心优势：分裂简单，合并也简单。
+9. buddy_add_block() 为什么把链表节点放在空闲块里？
+上次写了：
+struct free_block {
+  struct free_block *next;
+};
+然后：
+struct free_block *b = (struct free_block *)page_addr(id);
+b->next = buddy_free[order];
+buddy_free[order] = b;
+这个设计一开始看起来很怪：为什么把 struct free_block 放在真实物理内存里？
+原因是：这块内存已经空闲了，没人用，所以可以临时拿它的开头几个字节存链表指针。
+比如一个空闲 4 KiB 页：
++----------------+-----------------------------------+
+| next pointer   | rest of free page                 |
++----------------+-----------------------------------+
+当它被分配出去时，这个 next pointer 就不再有意义，用户可以覆盖它。
+这是内存分配器常见技巧，优点是：
+不需要额外 malloc 链表节点；
+空闲块本身就是链表节点。
+10. buddy_alloc_pages() 的工作过程
+假设要分配 order 2，也就是 16 KiB。
+代码逻辑是：
+static void *buddy_alloc_pages(int order) {
+  lock(&buddy_lock);
+  int o = order;
+  while (o <= MAX_ORDER && buddy_free[o] == NULL) {
+    o++;
+  }
+  if (o > MAX_ORDER) {
+    unlock(&buddy_lock);
+    return NULL;
+  }
+  struct free_block *b = buddy_free[o];
+  buddy_free[o] = b->next;
+  size_t id = page_id(b);
+  while (o > order) {
+    o--;
+    size_t right = id + (1UL << o);
+    buddy_add_block(right, o);
+  }
+  pages[id].flag = PG_LARGE;
+  pages[id].order = order;
+  size_t cnt = 1UL << order;
+  for (size_t i = 1; i < cnt; i++) {
+    pages[id + i].flag = PG_TAIL;
+  }
+  unlock(&buddy_lock);
+  return (void *)b;
+}
+它做了几件事：
+第一步，找一个不小于请求大小的空闲块。
+int o = order;
+while (o <= MAX_ORDER && buddy_free[o] == NULL) {
+  o++;
+}
+比如你要 order 2，如果没有 order 2，就找 order 3；再没有就找 order 4。
+第二步，把找到的大块从 free list 里取下来。
+struct free_block *b = buddy_free[o];
+buddy_free[o] = b->next;
+第三步，如果块太大，就不断拆小。
+while (o > order) {
+  o--;
+  size_t right = id + (1UL << o);
+  buddy_add_block(right, o);
+}
+第四步，给第一个页写 metadata。
+pages[id].flag = PG_LARGE;
+pages[id].order = order;
+第五步，把后续页标成 tail。
+pages[id + i].flag = PG_TAIL;
+为什么要标 tail？因为后续页属于同一个大块，不是独立分配块的开头。
+11. buddy_free_pages() 的工作过程
+释放大块时：
+static void buddy_free_pages(void *ptr) {
+  lock(&buddy_lock);
+  size_t id = page_id(ptr);
+  int order = pages[id].order;
+  while (order < MAX_ORDER) {
+    size_t buddy = id ^ (1UL << order);
+    if (buddy >= nr_pages) break;
+    if (pages[buddy].flag != PG_FREE) break;
+    if (pages[buddy].order != order) break;
+    if (!buddy_remove_block(buddy, order)) break;
+    if (buddy < id) id = buddy;
+    order++;
+  }
+  buddy_add_block(id, order);
+  unlock(&buddy_lock);
+}
+核心是：
+释放一个块后，看它的 buddy 是否也空闲。
+如果 buddy 空闲且大小相同，就合并。
+合并后继续往上看更大的 buddy。
+直到不能合并为止。
+例如：
+释放 page 0~1 的 8 KiB 块
+发现 page 2~3 也是空闲 8 KiB
+合并成 page 0~3 的 16 KiB 块
+再发现 page 4~7 也是空闲 16 KiB
+继续合并成 page 0~7 的 32 KiB 块
+这就是为什么 buddy 能缓解碎片问题。
+12. 为什么还需要 slab allocator？
+buddy 适合管理 4 KiB 及以上的大块，但不适合小对象。
+假设不用 slab，所有分配都走 buddy。
+如果用户请求：
+kalloc(17);
+buddy 最小只能给 4 KiB。
+也就是：
+用户要 17B
+实际给 4096B
+浪费 4079B
+如果 hard test 里大量分配 16、32、64、128 字节的小对象，这种浪费会非常严重。实验文档也说明 workload 会有大量频繁的小内存分配，绝大部分不超过 128 字节。
+所以我们加一层 slab：
+小对象：slab
+大对象：buddy
+推荐路由：
+size <= 2048:
+  用 slab
+size > 2048:
+  用 buddy
+为什么分界线选 2048？
+因为一个 4 KiB 页至少可以切出两个 2048B 对象：
+4096 / 2048 = 2
+如果对象比 2048 更大，比如 3000B，一个页只能放一个，slab 意义就不大了，直接走 buddy 更简单。
+13. slab 的 size class 是怎么来的？
+我们定义：
+#define MIN_CLASS_SHIFT 4    // 16B
+#define MAX_CLASS_SHIFT 11   // 2048B
+也就是：
+2^4  = 16
+2^5  = 32
+2^6  = 64
+2^7  = 128
+2^8  = 256
+2^9  = 512
+2^10 = 1024
+2^11 = 2048
+用户请求向上取 2 的幂。
+比如：
+kalloc(1)    -> 16B class
+kalloc(15)   -> 16B class
+kalloc(16)   -> 16B class
+kalloc(17)   -> 32B class
+kalloc(33)   -> 64B class
+kalloc(100)  -> 128B class
+kalloc(2000) -> 2048B class
+为什么要取 2 的幂？
+第一，满足实验对齐要求。实验要求返回地址按“不小于 size 的最小 2 的幂”对齐。比如 17 字节要 32 字节对齐。
+第二，管理简单。一个页可以平均切开：
+4096 / 16 = 256
+4096 / 32 = 128
+4096 / 64 = 64
+4096 / 128 = 32
+都是整数。
+14. slab 为什么能保证对齐？
+这是一个很重要的正确性点。
+假设一个 slab 页的起始地址是 4 KiB 对齐的：
+base = 0x100000
+它被切成 64B 对象：
+base + 0 * 64
+base + 1 * 64
+base + 2 * 64
+base + 3 * 64
+...
+因为：
+base 本身是 4096 对齐
+4096 也是 64 的倍数
+每个 offset 也是 64 的倍数
+所以每个对象地址都是 64 对齐。
+对于所有 slab class 都成立：
+16, 32, 64, 128, ..., 2048 都能整除 4096
+所以 slab 返回的小对象地址天然满足对齐要求。
+15. slab_new_page() 做了什么？
+当某个 class 没有可用 slab 页时，需要新建一个 slab 页。
+static struct page *slab_new_page(int cid) {
+  void *mem = buddy_alloc_pages(0);
+  if (mem == NULL) return NULL;
+  size_t id = page_id(mem);
+  struct page *p = &pages[id];
+  size_t sz = class_size(cid);
+  size_t n = PAGE_SIZE / sz;
+  p->flag = PG_SLAB;
+  p->order = 0;
+  p->class_id = cid;
+  p->inuse = 0;
+  p->total = n;
+  p->prev = p->next = NULL;
+  char *base = (char *)mem;
+  p->free_list = NULL;
+  for (size_t i = 0; i < n; i++) {
+    void *obj = base + i * sz;
+    *(void **)obj = p->free_list;
+    p->free_list = obj;
+  }
+  return p;
+}
+逐句讲。
+15.1 先向 buddy 要一个 4 KiB 页
+void *mem = buddy_alloc_pages(0);
+order 0 就是 4 KiB。
+slab 本身不直接管理大段物理内存，它从 buddy 那里拿页。
+关系是：
+buddy 管页
+slab 把页切成小对象
+15.2 设置这个页的 metadata
+p->flag = PG_SLAB;
+p->class_id = cid;
+p->inuse = 0;
+p->total = n;
+这说明：
+这个页现在不是普通大块；
+它是一个 slab 页；
+这个页服务某个固定大小 class；
+当前没有对象分配出去；
+总共有 n 个对象。
+15.3 把页切成对象，并串成 free list
+比如 cid 对应 64B。
+那么：
+size_t sz = 64;
+size_t n = 4096 / 64 = 64;
+循环做的是：
+for (size_t i = 0; i < n; i++) {
+  void *obj = base + i * sz;
+  *(void **)obj = p->free_list;
+  p->free_list = obj;
+}
+这会形成一个链表：
+p->free_list -> obj63 -> obj62 -> ... -> obj1 -> obj0 -> NULL
+以后分配一个 64B 对象，只要弹出链表头。
+16. slab_alloc() 做了什么？
+简化后的逻辑是：
+static void *slab_alloc(int cid) {
+  lock(&slab_lock[cid]);
+  struct page *p = slab_partial[cid];
+  if (p == NULL) {
+    unlock(&slab_lock[cid]);
+    p = slab_new_page(cid);
+    if (p == NULL) return NULL;
+    lock(&slab_lock[cid]);
+    slab_list_add(cid, p);
+  }
+  p = slab_partial[cid];
+  void *obj = p->free_list;
+  p->free_list = *(void **)obj;
+  p->inuse++;
+  if (p->free_list == NULL) {
+    slab_list_remove(cid, p);
+  }
+  unlock(&slab_lock[cid]);
+  return obj;
+}
+它做了几件事：
+第一，找到这个 class 的一个 partial page：
+struct page *p = slab_partial[cid];
+partial 的意思是：
+还有空闲对象的 slab 页
+第二，如果没有 partial page，就创建一个新 slab 页：
+p = slab_new_page(cid);
+slab_list_add(cid, p);
+第三，从这个 slab 页的 free list 拿一个对象：
+void *obj = p->free_list;
+p->free_list = *(void **)obj;
+p->inuse++;
+第四，如果这个页已经没有空闲对象了，就从 partial list 移除：
+if (p->free_list == NULL) {
+  slab_list_remove(cid, p);
+}
+因为它满了，暂时不能继续分配。
+17. slab_free() 做了什么？
+释放一个小对象时：
+static void slab_free(void *ptr) {
+  size_t id = page_id(ptr);
+  struct page *p = &pages[id];
+  int cid = p->class_id;
+  lock(&slab_lock[cid]);
+  int was_full = (p->free_list == NULL);
+  *(void **)ptr = p->free_list;
+  p->free_list = ptr;
+  p->inuse--;
+  if (was_full) {
+    slab_list_add(cid, p);
+  }
+  if (p->inuse == 0) {
+    slab_list_remove(cid, p);
+    p->flag = PG_LARGE;
+    p->order = 0;
+    unlock(&slab_lock[cid]);
+    buddy_free_pages(page_addr(id));
+    return;
+  }
+  unlock(&slab_lock[cid]);
+}
+逐步解释。
+17.1 通过 ptr 找到它所在的页
+size_t id = page_id(ptr);
+struct page *p = &pages[id];
+比如：
+ptr = page 100 里面的某个 64B 对象
+那么：
+id = 100
+p = &pages[100]
+然后：
+int cid = p->class_id;
+知道它属于哪个大小类别。
+17.2 把对象插回 free list
+*(void **)ptr = p->free_list;
+p->free_list = ptr;
+p->inuse--;
+这相当于链表头插法：
+释放前：
+p->free_list -> obj7 -> obj3 -> NULL
+释放 ptr 后：
+p->free_list -> ptr -> obj7 -> obj3 -> NULL
+17.3 如果这个页原来是满的，要重新加入 partial list
+int was_full = (p->free_list == NULL);
+释放之前如果：
+p->free_list == NULL
+说明这个页原来满了，所以不在 partial list 里。
+释放一个对象后，它有空位了，需要加回去：
+if (was_full) {
+  slab_list_add(cid, p);
+}
+17.4 如果整个页都空了，就还给 buddy
+if (p->inuse == 0) {
+  slab_list_remove(cid, p);
+  unlock(&slab_lock[cid]);
+  buddy_free_pages(page_addr(id));
+}
+这一步是为了避免 slab 永远占着页不还。
+比如某个 64B slab 页里所有对象都释放了：
+inuse = 0
+那这个页已经没有必要继续作为 slab 页存在，可以还给 buddy，之后它可以用于 4 KiB、8 KiB、16 KiB 等大块分配。
+注意这里的锁顺序：
+先释放 slab_lock
+再调用 buddy_free_pages
+这是为了避免锁顺序复杂导致死锁。
+18. 最终 kalloc(size) 为什么这样分流？
+static void *kalloc(size_t size) {
+  if (size == 0) return NULL;
+  if (size > MAX_ALLOC) return NULL;
+  int cid = class_for_size(size);
+  if (cid >= 0) {
+    return slab_alloc(cid);
+  }
+  size_t need = round_up_pow2(size);
+  if (need < PAGE_SIZE) {
+    need = PAGE_SIZE;
+  }
+  int order = ilog2_ceil(need) - PAGE_SHIFT;
+  if (order < 0 || order > MAX_ORDER) {
+    return NULL;
+  }
+  return buddy_alloc_pages(order);
+}
+逻辑是：
+size == 0:
+  直接拒绝。
+size > 16 MiB:
+  直接拒绝，实验允许这样做。
+size <= 2048:
+  走 slab。
+size > 2048:
+  走 buddy。
+为什么 size > 2048 要：
+need = round_up_pow2(size);
+因为实验要求按“不小于 size 的最小 2 的幂”对齐。最简单办法就是实际分配这个大小。
+比如：
+size = 3000
+round_up_pow2(size) = 4096
+分配 4 KiB
+size = 5000
+round_up_pow2(size) = 8192
+分配 8 KiB
+size = 20000
+round_up_pow2(size) = 32768
+分配 32 KiB
+这样返回地址天然满足对齐。
+19. 最终 kfree(ptr) 为什么这样分流？
+static void kfree(void *ptr) {
+  if (ptr == NULL) return;
+  uintptr_t a = (uintptr_t)ptr;
+  if (a < pool_start || a >= pool_end) {
+    return;
+  }
+  size_t id = page_id(ptr);
+  if (pages[id].flag == PG_SLAB) {
+    slab_free(ptr);
+  } else {
+    buddy_free_pages(ptr);
+  }
+}
+释放时没有 size，所以只能靠 metadata 判断。
+ptr 所在页是 PG_SLAB:
+  说明 ptr 是某个 slab 小对象
+  调 slab_free
+否则：
+  说明 ptr 是一个 buddy 大块的起始地址
+  调 buddy_free_pages
+注意：实验说非法 kfree 是 undefined behavior，所以你不需要处理所有错误输入。比如用户传入一个大块中间地址，本来就是调用者错误。
+调试阶段你可以加 assert：
+assert(pages[id].flag == PG_SLAB || pages[id].flag == PG_LARGE);
+这样能更早发现 bug。
+20. 为什么需要锁？
+实验要求多个处理器可以并发调用 kalloc/kfree。如果两个 CPU 同时修改同一个 free list，不加锁就会炸。
+举个例子：
+buddy_free[0] -> A -> B -> C
+CPU 0 和 CPU 1 同时执行分配，都看到头节点是 A。
+如果没有锁：
+CPU 0 拿到 A
+CPU 1 也拿到 A
+同一块内存被分配给两个人，直接违反 safety。
+所以 buddy 需要锁：
+static spinlock_t buddy_lock;
+每个 slab class 也需要锁：
+static spinlock_t slab_lock[NCLASS];
+为什么 slab 用多个锁，而不是一把大锁？
+因为 16B class 和 128B class 是不同的数据结构，互不影响。
+CPU 0 分配 16B
+CPU 1 分配 128B
+如果用不同锁，它们可以并行。
+slab_lock[0] 保护 16B class
+slab_lock[1] 保护 32B class
+slab_lock[2] 保护 64B class
+...
+这比一把全局锁好。
+21. spinlock 原理是什么？
+之前写的是：
+typedef struct {
+  volatile int locked;
+} spinlock_t;
+static inline void lock(spinlock_t *lk) {
+  while (__sync_lock_test_and_set(&lk->locked, 1)) {
+    while (lk->locked);
+  }
+}
+static inline void unlock(spinlock_t *lk) {
+  __sync_lock_release(&lk->locked);
+}
+核心是：
+__sync_lock_test_and_set(&lk->locked, 1)
+它是原子操作。
+意思是：
+把 lk->locked 设置成 1，并返回旧值。
+如果旧值是 0，说明锁之前没人拿，你成功拿锁。
+如果旧值是 1，说明别人已经拿锁，你继续等。
+locked = 0  => unlocked
+locked = 1  => locked
+为什么要原子操作？
+因为普通代码：
+if (locked == 0) {
+  locked = 1;
+}
+在多处理器上不是原子的，两个 CPU 可能同时看到 locked == 0，然后都进入临界区。
+原子 test-and-set 可以保证只有一个 CPU 成功。
+22. per-CPU cache 是什么？为什么不是一开始就必须写？
+前面的 buddy + slab + lock 已经能正确工作。
+但 hard test 可能会遇到性能问题，因为大量小对象分配会频繁抢 slab lock。实验文档也强调 hard test 关注多处理器上的性能和 scalability，希望尽量减少处理器之间等待。
+per-CPU cache 的思想是：
+每个 CPU 自己缓存一些小对象。
+平时分配/释放小对象只操作自己的缓存，不拿全局 slab lock。
+缓存空了，才批量从 slab 取。
+缓存太多，才批量还给 slab。
+比如 CPU 0 有自己的 64B 缓存：
+CPU 0 64B cache:
+obj -> obj -> obj -> NULL
+CPU 1 也有自己的 64B 缓存：
+CPU 1 64B cache:
+obj -> obj -> obj -> NULL
+这样 CPU 0 和 CPU 1 分配 64B 对象时，大部分时候互不干扰。
+22.1 per-CPU cache 的计数语义
+如果你加了 per-CPU cache，要注意一个概念：
+对象从 slab 拿到 CPU cache 后，
+从 slab 的角度看，它已经“借出去了”。
+所以在这种实现里：
+p->inuse
+不再严格表示“用户正在使用的对象数”，而表示：
+从这个 slab 页借出去的对象数，包括：
+1. 用户手里的对象
+2. per-CPU cache 里暂存的对象
+这样做是为了简单。
+只有当 CPU cache 把对象真正 flush 回 slab 时，才调用 slab_free()，inuse 才减少。
+这会导致某些完全空闲的页暂时不归还 buddy，但换来的是小对象分配的高性能。可以通过限制 cache 数量控制浪费。
+23. 为什么这套结构满足实验要求？
+我们逐条对照。
+23.1 分配必须在 heap 内
+我们只管理：
+[pool_start, pool_end)
+而它来自：
+[heap.start, heap.end)
+所以返回地址一定在 heap 内。
+23.2 不同分配不能重叠
+buddy 保证一个页块要么在 free list，要么分配出去，不会同时出现。
+slab 保证一个对象要么在 slab free list，要么分配出去，不会同时出现。
+锁保证多处理器同时操作时不会把同一个块分给两个人。
+23.3 对齐要求
+小对象：
+slab class 是 16/32/64/.../2048
+对象地址是 page base + class_size 的倍数
+page base 是 4096 对齐
+所以满足对齐。
+大对象：
+buddy 分配 power-of-two 大小的块
+pool_start 16 MiB 对齐
+拆分保持块大小对齐
+所以 4 KiB 到 16 MiB 的块都满足对齐。
+23.4 找不到空间返回 NULL
+buddy 找不到足够大的块时返回 NULL。
+slab 新建页失败时也返回 NULL。
+23.5 可以拒绝超过 16 MiB
+代码里：
+if (size > MAX_ALLOC) return NULL;
+符合实验允许的策略。
+23.6 静态内存不超过限制
+我们没有静态声明巨大 pages[]。
+只声明：
+static struct page *pages;
+真正的 metadata 在 pmm_init() 里从 heap 切出来。
+24. 你现在应该怎么实现？
+建议你按这个顺序写，不要一次写完。
+第一步：先只实现 buddy
+先支持：
+kalloc(4096)
+kalloc(8192)
+kalloc(16384)
+...
+暂时可以让小对象也走 buddy，虽然浪费，但方便验证。
+你要确保：
+分配不会重叠；
+释放后可以再次分配；
+buddy 可以合并；
+地址满足对齐。
+这一阶段重点理解：
+pages[id].flag
+pages[id].order
+buddy_free[order]
+第二步：加 slab
+再支持：
+kalloc(16)
+kalloc(17)
+kalloc(64)
+kalloc(100)
+kalloc(128)
+这一阶段重点理解：
+pages[id].flag = PG_SLAB;
+pages[id].class_id;
+pages[id].inuse;
+pages[id].free_list;
+slab_partial[cid];
+你可以打印：
+printf("slab alloc cid=%d page=%d inuse=%d\n", cid, id, p->inuse);
+这样会很直观。
+第三步：加锁
+如果你先写单线程版本，调通后再加锁。
+最低要求：
+buddy 操作加 buddy_lock；
+每个 slab class 操作加 slab_lock[cid]。
+不要一开始就搞复杂锁顺序。
+第四步：再考虑 per-CPU cache
+per-CPU cache 是优化，不是正确性的第一步。
+先通过 easy test，再冲 hard test。
+25. 一个最小心智模型
+你可以把整个 allocator 想成这样：
+heap
+ |
+ |-- pages[] metadata
+ |
+ |-- pool_start
+       |
+       |-- buddy 管所有 4 KiB 页块
+             |
+             |-- 大请求直接从 buddy 分
+             |
+             |-- 小请求先从 slab 分
+                      |
+                      |-- slab 没页时，向 buddy 要一个 4 KiB 页
+                      |-- slab 把页切成 16/32/64/... 字节对象
+struct page 是整个设计的核心账本：
+给定一个 ptr
+  |
+  v
+算出它属于哪个 page
+  |
+  v
+查 pages[id]
+  |
+  +-- PG_SLAB  => 小对象，走 slab_free
+  |
+  +-- PG_LARGE => 大对象，走 buddy_free_pages
+这就是为什么 struct page 必须存在。没有它，kfree(ptr) 就不知道该怎么释放。
+可以。我们把实现目标改成：
+全部请求都用 buddy 分配。小于 4 KiB 的请求也直接给 4 KiB。
+这样非常浪费内存，但实现简单很多。实验确实有大量小内存分配，所以这个版本不一定能过 hard test；但它比 slab 简单得多，适合先把正确性跑通。实验要求包括：分配发生在 heap 内、不同分配不重叠、返回地址满足对齐、失败返回 NULL、允许拒绝超过 16 MiB 的分配，并且 pmm->init() 必须在 os->init() 中完成。
+1. 简化后的整体思路
+只做这一件事：
+把 heap 划分成 4 KiB 页；
+buddy 管理 4 KiB、8 KiB、16 KiB、...、16 MiB 的块。
+所有请求都向上取整：
+kalloc(1)       -> 实际分配 4 KiB
+kalloc(17)      -> 实际分配 4 KiB
+kalloc(4096)    -> 实际分配 4 KiB
+kalloc(4097)    -> 实际分配 8 KiB
+kalloc(10000)   -> 实际分配 16 KiB
+kalloc(16 MiB)  -> 实际分配 16 MiB
+这样做的好处是：不用 slab，不用小对象链表，不用 class_id，不用 inuse。
+坏处是：小分配非常浪费。
+2. 精简版 struct page
+现在 struct page 只需要记录两件事：
+struct page {
+  unsigned char state;
+  unsigned char order;
+};
+含义：
+state:
+  这个页现在是什么状态。
+order:
+  如果这个页是某个 buddy 块的开头，记录这个块有多大。
+状态只保留三个：
+enum {
+  PAGE_UNUSED = 0,
+  PAGE_FREE   = 1,
+  PAGE_USED   = 2,
+  PAGE_TAIL   = 3,
+};
+解释：
+PAGE_FREE:
+  这是一个空闲 buddy 块的第一页。
+PAGE_USED:
+  这是一个已经分配出去的 buddy 块的第一页。
+PAGE_TAIL:
+  这是某个块的后续页，不是块的开头。
+PAGE_UNUSED:
+  初始化前或不用的页。
+例子：分配 16 KiB，也就是 4 个页。
++--------+--------+--------+--------+
+| page 8 | page 9 | page10 | page11 |
++--------+--------+--------+--------+
+metadata 是：
+pages[8].state  = PAGE_USED
+pages[8].order  = 2        // 4 KiB << 2 = 16 KiB
+pages[9].state  = PAGE_TAIL
+pages[10].state = PAGE_TAIL
+pages[11].state = PAGE_TAIL
+释放时只允许释放第一页地址，也就是 page 8 的地址。
+3. buddy 的核心概念
+buddy 只管理 2 的幂大小的块：
+order 0: 4 KiB
+order 1: 8 KiB
+order 2: 16 KiB
+order 3: 32 KiB
+...
+order 12: 16 MiB
+公式：
+block_size = PAGE_SIZE << order;
+我们维护 13 个空闲链表：
+free_list[0]  -> 所有空闲 4 KiB 块
+free_list[1]  -> 所有空闲 8 KiB 块
+free_list[2]  -> 所有空闲 16 KiB 块
+...
+free_list[12] -> 所有空闲 16 MiB 块
+分配时：
+需要 order = 2；
+如果 free_list[2] 有块，直接拿。
+如果没有，就找更大的块，例如 order = 3。
+把 order = 3 拆成两个 order = 2。
+一个返回，另一个放回 free_list[2]。
+释放时：
+把块放回去；
+如果它旁边的 buddy 也是空闲且大小相同，就合并成更大的块。
+buddy 的“伙伴页号”计算：
+buddy_id = id ^ (1UL << order);
+4. 完整精简版 src/pmm.c
+你可以先直接参考这个版本。
+#include <common.h>
+#define PAGE_SHIFT 12
+#define PAGE_SIZE  (1UL << PAGE_SHIFT)
+#define MAX_ALLOC  (16UL << 20)  // 16 MiB
+#define MAX_ORDER  12            // 4 KiB << 12 = 16 MiB
+enum {
+  PAGE_UNUSED = 0,
+  PAGE_FREE   = 1,
+  PAGE_USED   = 2,
+  PAGE_TAIL   = 3,
+};
+struct page {
+  unsigned char state;
+  unsigned char order;
+};
+struct free_block {
+  struct free_block *next;
+};
+typedef struct {
+  volatile int locked;
+} spinlock_t;
+static struct page *pages;
+static size_t nr_pages;
+static uintptr_t pool_start;
+static uintptr_t pool_end;
+static struct free_block *free_list[MAX_ORDER + 1];
+static spinlock_t buddy_lock;
+static inline void lock(spinlock_t *lk) {
+  while (__sync_lock_test_and_set(&lk->locked, 1)) {
+    while (lk->locked);
+  }
+}
+static inline void unlock(spinlock_t *lk) {
+  __sync_lock_release(&lk->locked);
+}
+static inline uintptr_t align_down(uintptr_t x, uintptr_t a) {
+  return x & ~(a - 1);
+}
+static inline uintptr_t align_up(uintptr_t x, uintptr_t a) {
+  return (x + a - 1) & ~(a - 1);
+}
+static inline size_t page_id(void *p) {
+  return ((uintptr_t)p - pool_start) >> PAGE_SHIFT;
+}
+static inline void *page_addr(size_t id) {
+  return (void *)(pool_start + (id << PAGE_SHIFT));
+}
+4.1 加入一个空闲块
+这个函数把一个 buddy 块加入对应的空闲链表。
+static void buddy_add_block(size_t id, int order) {
+  pages[id].state = PAGE_FREE;
+  pages[id].order = order;
+  size_t n = 1UL << order;
+  for (size_t i = 1; i < n; i++) {
+    pages[id + i].state = PAGE_TAIL;
+    pages[id + i].order = 0;
+  }
+  struct free_block *b = (struct free_block *)page_addr(id);
+  b->next = free_list[order];
+  free_list[order] = b;
+}
+为什么可以把 struct free_block 放在空闲块开头？
+因为这块内存现在是空闲的，没人用。我们临时拿它前几个字节存链表指针。
+空闲 4 KiB 块：
++----------------+-----------------------+
+| next pointer   | free memory           |
++----------------+-----------------------+
+4.2 从空闲链表删除某个块
+释放时合并 buddy，需要把 buddy 块从 free list 里摘掉。
+static int buddy_remove_block(size_t id, int order) {
+  struct free_block **p = &free_list[order];
+  void *addr = page_addr(id);
+  while (*p) {
+    if ((void *)(*p) == addr) {
+      *p = (*p)->next;
+      return 1;
+    }
+    p = &(*p)->next;
+  }
+  return 0;
+}
+4.3 初始化 buddy 管理区
+这个函数把 [pool_start, pool_end) 里面的内存切成若干 buddy 块，加入 free list。
+static void buddy_init_range(uintptr_t start, uintptr_t end) {
+  uintptr_t p = start;
+  while (p + PAGE_SIZE <= end) {
+    int order = MAX_ORDER;
+    while (order > 0) {
+      uintptr_t size = PAGE_SIZE << order;
+      if ((p % size) == 0 && p + size <= end) {
+        break;
+      }
+      order--;
+    }
+    buddy_add_block((p - pool_start) >> PAGE_SHIFT, order);
+    p += PAGE_SIZE << order;
+  }
+}
+这段代码的意思是：
+从 pool_start 开始；
+每次尽量放入一个最大的、对齐正确的 buddy 块；
+直到覆盖完整个 pool。
+4.4 pmm_init()
+初始化时要做几件事：
+对齐 heap。
+在 heap 开头放 pages[] metadata。
+剩下的部分作为真正可分配内存。
+初始化 buddy free list。
+static void pmm_init() {
+  for (int i = 0; i <= MAX_ORDER; i++) {
+    free_list[i] = NULL;
+  }
+  buddy_lock.locked = 0;
+  uintptr_t hstart = align_up((uintptr_t)heap.start, PAGE_SIZE);
+  uintptr_t hend   = align_down((uintptr_t)heap.end, PAGE_SIZE);
+  if (hend <= hstart) {
+    nr_pages = 0;
+    return;
+  }
+  size_t total_pages = (hend - hstart) / PAGE_SIZE;
+  pages = (struct page *)hstart;
+  size_t meta_bytes = total_pages * sizeof(struct page);
+  meta_bytes = align_up(meta_bytes, PAGE_SIZE);
+  pool_start = align_up(hstart + meta_bytes, MAX_ALLOC);
+  pool_end = hend;
+  if (pool_end <= pool_start) {
+    nr_pages = 0;
+    return;
+  }
+  nr_pages = (pool_end - pool_start) / PAGE_SIZE;
+  for (size_t i = 0; i < nr_pages; i++) {
+    pages[i].state = PAGE_UNUSED;
+    pages[i].order = 0;
+  }
+  buddy_init_range(pool_start, pool_end);
+  printf("pmm: pool [%p, %p), pages = %d\n",
+         (void *)pool_start, (void *)pool_end, nr_pages);
+}
+为什么 pool_start 要按 16 MiB 对齐？
+因为我们最大支持 16 MiB 分配。buddy 从 16 MiB 对齐地址开始管理，之后拆出来的 8 MiB、4 MiB、2 MiB、4 KiB 块都会天然满足对齐要求。
+4.5 计算请求需要哪个 order
+例如：
+size = 1       -> order 0，分配 4 KiB
+size = 4096    -> order 0，分配 4 KiB
+size = 4097    -> order 1，分配 8 KiB
+size = 8193    -> order 2，分配 16 KiB
+代码：
+static int order_for_size(size_t size) {
+  size_t block_size = PAGE_SIZE;
+  int order = 0;
+  while (block_size < size) {
+    block_size <<= 1;
+    order++;
+    if (order > MAX_ORDER) {
+      return -1;
+    }
+  }
+  return order;
+}
+4.6 buddy 分配
+static void *buddy_alloc(int order) {
+  lock(&buddy_lock);
+  int o = order;
+  while (o <= MAX_ORDER && free_list[o] == NULL) {
+    o++;
+  }
+  if (o > MAX_ORDER) {
+    unlock(&buddy_lock);
+    return NULL;
+  }
+  struct free_block *b = free_list[o];
+  free_list[o] = b->next;
+  size_t id = page_id(b);
+  while (o > order) {
+    o--;
+    size_t right_id = id + (1UL << o);
+    buddy_add_block(right_id, o);
+  }
+  pages[id].state = PAGE_USED;
+  pages[id].order = order;
+  size_t n = 1UL << order;
+  for (size_t i = 1; i < n; i++) {
+    pages[id + i].state = PAGE_TAIL;
+    pages[id + i].order = 0;
+  }
+  unlock(&buddy_lock);
+  return (void *)b;
+}
+核心过程：
+找一个不小于需求的空闲块；
+如果太大，就不断劈成两半；
+左半边继续劈；
+右半边放回 free list；
+最后返回目标大小的块。
+4.7 buddy 释放
+static void buddy_free(void *ptr) {
+  if (ptr == NULL) {
+    return;
+  }
+  uintptr_t addr = (uintptr_t)ptr;
+  if (addr < pool_start || addr >= pool_end) {
+    return;
+  }
+  if ((addr - pool_start) % PAGE_SIZE != 0) {
+    return;
+  }
+  lock(&buddy_lock);
+  size_t id = page_id(ptr);
+  if (id >= nr_pages || pages[id].state != PAGE_USED) {
+    unlock(&buddy_lock);
+    return;
+  }
+  int order = pages[id].order;
+  while (order < MAX_ORDER) {
+    size_t buddy_id = id ^ (1UL << order);
+    if (buddy_id >= nr_pages) {
+      break;
+    }
+    if (pages[buddy_id].state != PAGE_FREE) {
+      break;
+    }
+    if (pages[buddy_id].order != order) {
+      break;
+    }
+    if (!buddy_remove_block(buddy_id, order)) {
+      break;
+    }
+    if (buddy_id < id) {
+      id = buddy_id;
+    }
+    order++;
+  }
+  buddy_add_block(id, order);
+  unlock(&buddy_lock);
+}
+释放逻辑：
+先找到当前块的 order；
+看看它的 buddy 是否空闲；
+如果 buddy 也空闲且大小相同，就合并；
+合并后继续尝试合并更大的 buddy；
+不能合并时，把最终块放回 free list。
+4.8 最终 kalloc() 和 kfree()
+static void *kalloc(size_t size) {
+  if (size == 0) {
+    return NULL;
+  }
+  if (size > MAX_ALLOC) {
+    return NULL;
+  }
+  int order = order_for_size(size);
+  if (order < 0 || order > MAX_ORDER) {
+    return NULL;
+  }
+  return buddy_alloc(order);
+}
+static void kfree(void *ptr) {
+  buddy_free(ptr);
+}
+4.9 模块定义
+放在 pmm.c 最后：
+MODULE_DEF(pmm) = {
+  .init = pmm_init,
+  .alloc = kalloc,
+  .free = kfree,
+};
+5. 别忘了在 os->init() 调用 pmm->init()
+在 src/os.c 里确认有：
+static void os_init() {
+  pmm->init();
+}
+原因是 Online Judge 会替换 framework/main.c，但保留你的 src/ 目录。测试代码会调用 os->init()，所以 pmm->init() 必须放在这里。
+完整例子：
+#include <common.h>
+static void os_init() {
+  pmm->init();
+}
+static void os_run() {
+  printf("Hello World from CPU #%d\n", cpu_current());
+  while (1);
+}
+MODULE_DEF(os) = {
+  .init = os_init,
+  .run = os_run,
+};
+如果你的框架里没有 cpu_current()，就保留原来的 os_run()，关键是 os_init() 里要调用 pmm->init()。
+6. 这个精简版本的优缺点
+优点：
+实现简单；
+没有 slab；
+没有 per-CPU cache；
+没有复杂 struct page；
+kfree 不需要 size；
+对齐天然满足；
+支持释放和合并；
+多处理器下用一把锁保证正确性。
+缺点：
+小内存请求非常浪费。
+kalloc(1) 也会占用 4 KiB。
+多处理器性能一般。
+hard test 不一定能过。
+但作为第一版，非常适合你现在实现。
+7. 你现在只需要理解这三个数据结构
+第一，pages[]
+static struct page *pages;
+它是账本。
+pages[0] 描述 pool 里的第 0 个 4 KiB 页
+pages[1] 描述 pool 里的第 1 个 4 KiB 页
+pages[2] 描述 pool 里的第 2 个 4 KiB 页
+...
+第二，free_list[]
+static struct free_block *free_list[MAX_ORDER + 1];
+它记录不同大小的空闲块。
+free_list[0] -> 4 KiB 空闲块
+free_list[1] -> 8 KiB 空闲块
+free_list[2] -> 16 KiB 空闲块
+...
+第三，buddy_lock
+static spinlock_t buddy_lock;
+它保证多个 CPU 不会同时破坏 free list。
+这个版本简单粗暴：
+kalloc 加锁；
+kfree 加锁；
+一次只允许一个 CPU 操作 buddy。
+性能一般，但正确性容易保证。
+8. 最小测试建议
+先测这些：
+void *a = pmm->alloc(1);
+void *b = pmm->alloc(4096);
+void *c = pmm->alloc(4097);
+printf("a = %p\n", a);
+printf("b = %p\n", b);
+printf("c = %p\n", c);
+pmm->free(a);
+pmm->free(b);
+pmm->free(c);
+检查：
+a, b, c 都不是 NULL；
+地址都在 heap 范围内；
+a, b, c 都是 4096 对齐；
+释放后再次分配不会崩。
+再测：
+void *x = pmm->alloc(16 * 1024 * 1024);
+printf("x = %p\n", x);
+pmm->free(x);
+如果 16 MiB 分配成功，地址应该是 16 MiB 对齐的。
+9. 你可以先记住这一句话
+这个精简版 allocator 的本质是：
+所有内存都按页分配；小请求也给一整页；释放时根据 pages[id].order 知道块有多大，然后尝试和 buddy 合并。
+这就是 buddy-only 版本的全部核心。
